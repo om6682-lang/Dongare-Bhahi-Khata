@@ -494,7 +494,6 @@ function computeTotals(list){
       cash -= amt; profit -= amt; totalCapitalWithdraw += amt;
     } else if(t.type==='creditor_scheme'){
       creditors[t.party] = (creditors[t.party]||0) - amt;
-      profit += amt;
     }
   });
   return {cash, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
@@ -543,6 +542,7 @@ function renderNav(){
     {id:'parties', label:'🤝 खाता'},
     {id:'summary', label:'📊 हिसाब'},
     {id:'report', label:'🧾 रिपोर्ट'},
+    {id:'scheme', label:'🎁 स्कीम/छूट'},
     {id:'capital', label:'👑 पूंजी'},
     {id:'settings', label:'⚙️ सेटिंग'},
   ];
@@ -577,6 +577,7 @@ function renderSection(){
   else if(state.section==='partyDetail') c.innerHTML = sectionPartyDetail();
   else if(state.section==='summary') c.innerHTML = sectionSummary();
   else if(state.section==='report') c.innerHTML = sectionReport();
+  else if(state.section==='scheme') c.innerHTML = sectionSchemeAccount();
   else if(state.section==='capital') c.innerHTML = sectionCapital();
   else if(state.section==='settings') c.innerHTML = sectionSettings();
   bindDynamic();
@@ -1557,6 +1558,51 @@ function shareGeneratedReport(){
   } else {
     alert('इस ब्राउज़र में सीधे शेयर नहीं हो पा रहा। कृपया स्क्रीनशॉट लेकर भेजें।');
   }
+}
+
+// ---------- स्कीम/छूट खाता (कौन सी फ़र्म से कितनी स्कीम/छूट मिली) ----------
+
+function sectionSchemeAccount(){
+  const list = currentTx().filter(t=>t.type==='creditor_scheme');
+  const shopName = SHOPS.find(s=>s.id===state.shop).name;
+
+  const byFirm = {};
+  list.forEach(t=>{
+    byFirm[t.party] = (byFirm[t.party]||0) + t.amount;
+  });
+  const firmEntries = Object.entries(byFirm).sort((a,b)=>b[1]-a[1]);
+  const grandTotal = firmEntries.reduce((s,[k,v])=>s+v,0);
+
+  const firmRows = firmEntries.length ? firmEntries.map(([name,amt])=>
+    `<div class="party-row"><span class="pname">${escapeHtml(name)}</span><span class="pos">${fmtMoney(amt)}</span></div>`
+  ).join('') : `<div class="empty">अभी तक किसी फ़र्म से कोई स्कीम/छूट दर्ज नहीं हुई</div>`;
+
+  const historyRows = list.length ? list.slice().sort((a,b)=>b.ts-a.ts).map(t=>`
+    <div class="entry">
+      <div>
+        <span class="type-tag tag-receive_due">स्कीम/छूट</span><br>
+        <span class="party">${escapeHtml(t.party)}</span>
+        <div class="note">${fmtDate(t.date)}${t.note?(' · '+escapeHtml(t.note)):''}</div>
+      </div>
+      <span class="amt pos">${fmtMoney(t.amount)}</span>
+    </div>`).join('') : `<div class="empty">अभी कोई हिस्ट्री नहीं है</div>`;
+
+  return `
+  <div class="card">
+    <h2>🎁 स्कीम/छूट खाता — ${shopName}</h2>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 10px;">जब कोई लेनदार/सप्लायर बिना पैसे लिए बकाया कम कर दे (स्कीम/छूट), वो यहाँ ट्रैक होता है। इसका असर सिर्फ़ उस लेनदार के बकाये पर पड़ता है — सिल्लक (कैश) या लाभ पर कोई असर नहीं।</p>
+    <div class="summary-grid">
+      <div class="stat balance" style="grid-column:span 2;"><div class="label">कुल स्कीम/छूट (अब तक)</div><div class="val pos" style="font-size:22px;">${fmtMoney(grandTotal)}</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>फ़र्म-वार कुल स्कीम/छूट</h2>
+    ${firmRows}
+  </div>
+  <div class="card">
+    <h2>पूरी हिस्ट्री</h2>
+    ${historyRows}
+  </div>`;
 }
 
 // ---------- पूंजी खाता (Owner Capital Account — दोनों दुकानें मिलाकर) ----------
