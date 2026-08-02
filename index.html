@@ -358,6 +358,7 @@ const TYPE_META = {
   capital_invest:  {label:'पूंजी निवेश (मालिक से मिला)', tag:'tag-purchase', needsParty:false, needsCost:false, kind:'capital_invest'},
   capital_withdraw:{label:'पूंजी निकासी (मालिक ने लिया)', tag:'tag-pay_due', needsParty:false, needsCost:false, kind:'capital_withdraw'},
   creditor_scheme: {label:'लेनदार से स्कीम/छूट मिली', tag:'tag-receive_due', needsParty:true, needsCost:false, kind:'creditor_scheme'},
+  capital_invest_stock: {label:'पूंजी निवेश (माल के रूप में)', tag:'tag-purchase', needsParty:false, needsCost:false, kind:'capital_invest_stock'},
   bank_deposit: {label:'बैंक में जमा (कैश → बैंक)', tag:'tag-purchase', needsParty:false, needsCost:false, kind:'bank_deposit'},
   bank_withdraw: {label:'बैंक से निकासी (बैंक → कैश)', tag:'tag-receive_due', needsParty:false, needsCost:false, kind:'bank_withdraw'},
 };
@@ -508,6 +509,8 @@ function computeTotals(list){
       cash -= amt; bank += amt;
     } else if(t.type==='bank_withdraw'){
       bank -= amt; cash += amt;
+    } else if(t.type==='capital_invest_stock'){
+      totalCapitalInvest += amt;
     }
   });
   return {cash, bank, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
@@ -2360,6 +2363,13 @@ function openStockForm(id){
   state.editingStockId = id || null;
   const it = id ? currentStock().find(s=>s.id===id) : null;
   document.getElementById('stockFormWrap').innerHTML = stockFormHtml(it);
+  toggleStockSourceParty();
+}
+function toggleStockSourceParty(){
+  const sourceEl = document.getElementById('s_source');
+  const partyField = document.getElementById('stockSourcePartyField');
+  if(!sourceEl || !partyField) return;
+  partyField.style.display = sourceEl.value==='credit' ? 'block' : 'none';
 }
 function stockFormHtml(it){
   return `
@@ -2384,6 +2394,19 @@ function stockFormHtml(it){
     </select>
     <label>मात्रा</label>
     <input type="number" id="s_qty" value="${it?it.qty:1}" min="1">
+    ${!it ? `
+    <label>यह स्टॉक कैसे आया? (हिसाब अपने-आप बन जाएगा)</label>
+    <select id="s_source" onchange="toggleStockSourceParty()">
+      <option value="cash">नकद से खरीदा</option>
+      <option value="credit">उधार में लिया (सप्लायर से)</option>
+      <option value="capital">मालिक की पूंजी से (पहले से मौजूद माल)</option>
+      <option value="none">सिर्फ़ स्टॉक जोड़ें, कोई हिसाब एंट्री ना बनाएं</option>
+    </select>
+    <div id="stockSourcePartyField">
+      <label>सप्लायर/लेनदार का नाम</label>
+      <input type="text" id="s_source_party" list="partyDatalist" placeholder="जैसे: XYZ Distributors">
+      <datalist id="partyDatalist">${partyDatalistHtml()}</datalist>
+    </div>` : ''}
     <label>IMEI / सीरियल नंबर (वैकल्पिक)</label>
     <input type="text" id="s_imei" placeholder="15 अंकों का IMEI" value="${it&&it.imei?escapeHtml(it.imei):''}">
     <label>बारकोड (वैकल्पिक)</label>
@@ -2427,6 +2450,19 @@ async function saveStock(){
   if(!qty || qty<1){ alert('कृपया सही मात्रा डालें'); return; }
 
   const stock = currentStock();
+  let sourceInfo = null;
+  if(!state.editingStockId){
+    const sourceEl = document.getElementById('s_source');
+    const source = sourceEl ? sourceEl.value : 'none';
+    let sourceParty = '';
+    if(source==='credit'){
+      const partyEl = document.getElementById('s_source_party');
+      sourceParty = partyEl ? partyEl.value.trim() : '';
+      if(!sourceParty){ alert('कृपया सप्लायर/लेनदार का नाम डालें'); return; }
+    }
+    sourceInfo = {source, sourceParty};
+  }
+
   if(state.editingStockId){
     const it = stock.find(s=>s.id===state.editingStockId);
     if(it){
@@ -2439,6 +2475,18 @@ async function saveStock(){
       sellPrice: (sellRaw==='' || isNaN(sell)) ? null : sell,
       phoneType, qty, imei, barcode, note
     });
+    const totalCost = cost*qty;
+    if(sourceInfo && totalCost>0){
+      const itemLabel = (company?(company+' — '):'')+name;
+      if(sourceInfo.source==='cash'){
+        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_cash', amount:totalCost, cost:0, date:state.date, party:'', note:'स्टॉक खरीद: '+itemLabel, paymentMode:'cash'});
+      } else if(sourceInfo.source==='credit'){
+        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_credit', amount:totalCost, cost:0, date:state.date, party:sourceInfo.sourceParty, note:'स्टॉक खरीद: '+itemLabel});
+      } else if(sourceInfo.source==='capital'){
+        currentTx().push({id:uid(), ts:Date.now(), type:'capital_invest_stock', amount:totalCost, cost:0, date:state.date, party:'', note:'पूंजी (माल के रूप में): '+itemLabel});
+      }
+      // source === 'none' → कोई एंट्री नहीं बनेगी
+    }
   }
   await saveShop(state.shop);
   closeStockForm();
