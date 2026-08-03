@@ -406,7 +406,7 @@ async function saveOwnerCapital(){
 }
 
 function emptyShopData(){
-  return { transactions: [], stock: [], opening: { cash: 0, bank: 0, profit: 0, parties: {}, capitalInvest: 0, capitalWithdraw: 0 }, partyInfo: {}, shopInfo: { address: '', gstNo: '' } };
+  return { transactions: [], stock: [], opening: { cash: 0, bank: 0, profit: 0, parties: {}, capitalInvest: 0, capitalWithdraw: 0 }, partyInfo: {}, shopInfo: { address: '', gstNo: '', manualStockValue: 0 } };
 }
 function normalizeShopData(d){
   if(!d || typeof d !== 'object') d = {};
@@ -420,9 +420,11 @@ function normalizeShopData(d){
   if(typeof d.opening.capitalWithdraw !== 'number' || isNaN(d.opening.capitalWithdraw)) d.opening.capitalWithdraw = 0;
   if(!d.opening.parties || typeof d.opening.parties !== 'object') d.opening.parties = {};
   if(!d.partyInfo || typeof d.partyInfo !== 'object') d.partyInfo = {};
-  if(!d.shopInfo || typeof d.shopInfo !== 'object') d.shopInfo = { address: '', gstNo: '' };
+  if(!d.shopInfo || typeof d.shopInfo !== 'object') d.shopInfo = { address: '', gstNo: '', manualStockValue: 0 };
   if(typeof d.shopInfo.address !== 'string') d.shopInfo.address = '';
   if(typeof d.shopInfo.gstNo !== 'string') d.shopInfo.gstNo = '';
+  if(typeof d.shopInfo.manualStockValue !== 'number' || isNaN(d.shopInfo.manualStockValue)) d.shopInfo.manualStockValue = 0;
+  if(typeof d.shopInfo.manualStockValueDate !== 'string') d.shopInfo.manualStockValueDate = '';
   return d;
 }
 
@@ -537,6 +539,24 @@ function computeCumulative(shopId){
     totalCapitalWithdraw: base.totalCapitalWithdraw + (Number(opening.capitalWithdraw)||0),
     debtors, creditors
   });
+}
+
+// जो दुकान हर आइटम अलग ट्रैक नहीं करती, उसकी अनुमानित स्टॉक वैल्यू —
+// आख़िरी बार सेव किए गए बेस के बाद हुई (बिना स्टॉक-लिंक वाली) खरीद/बिक्री एंट्री से अपने-आप बढ़ती-घटती है
+function computeManualStockValue(shopId){
+  const shopInfo = state.data[shopId].shopInfo || {};
+  const base = Number(shopInfo.manualStockValue) || 0;
+  const sinceDate = shopInfo.manualStockValueDate || '';
+  let movement = 0;
+  state.data[shopId].transactions.forEach(t=>{
+    if(sinceDate && !(t.date > sinceDate)) return;
+    if((t.type==='purchase_cash' || t.type==='purchase_credit') && !t.stockLinked){
+      movement += t.amount;
+    } else if((t.type==='sale_cash' || t.type==='sale_credit') && !t.stockRestore){
+      movement -= (t.cost||0);
+    }
+  });
+  return base + movement;
 }
 
 function render(){
@@ -1163,6 +1183,51 @@ function partyLedgerEntries(name){
   return entries.map(e=>{ running += e.signed; return Object.assign({}, e, {running}); });
 }
 
+function daysBetween(fromDateStr, toDateStr){
+  const d1 = new Date(fromDateStr+'T00:00:00');
+  const d2 = new Date(toDateStr+'T00:00:00');
+  return Math.max(0, Math.round((d2-d1)/86400000));
+}
+
+// FIFO बिल-वार बकाया — हर उधार बिल अलग ट्रैक होता है, पेमेंट सबसे पुराने बिल से पहले क्लियर होती है
+function computePartyBills(name, kind){
+  const shopData = state.data[state.shop];
+  const bills = [];
+  const openingInfo = shopData.opening.parties && shopData.opening.parties[name];
+  if(openingInfo && Number(openingInfo.amount) && openingInfo.type===kind){
+    bills.push({date: null, amount: Number(openingInfo.amount), remaining: Number(openingInfo.amount), isOpening:true, ts:-1});
+  }
+
+  const applyPaymentFIFO = (amt) => {
+    let remaining = amt;
+    for(const bill of bills){
+      if(remaining<=0.5) break;
+      if(bill.remaining<=0.5) continue;
+      const deduct = Math.min(bill.remaining, remaining);
+      bill.remaining -= deduct;
+      remaining -= deduct;
+    }
+  };
+
+  const entries = currentTx().filter(t=>t.party===name).sort((a,b)=>a.ts-b.ts);
+  entries.forEach(t=>{
+    if(kind==='debtor'){
+      if(t.type==='sale_credit' || t.type==='credit_given'){
+        bills.push({date:t.date, amount:t.amount, remaining:t.amount, ts:t.ts, note:t.note});
+      } else if(t.type==='receive_due'){
+        applyPaymentFIFO(t.amount);
+      }
+    } else {
+      if(t.type==='purchase_credit'){
+        bills.push({date:t.date, amount:t.amount, remaining:t.amount, ts:t.ts, note:t.note});
+      } else if(t.type==='pay_due' || t.type==='creditor_scheme'){
+        applyPaymentFIFO(t.amount);
+      }
+    }
+  });
+  return bills;
+}
+
 function sectionPartyDetail(){
   const name = state.selectedParty;
   if(!name){ state.section='parties'; return sectionParties(); }
@@ -1185,6 +1250,11 @@ function sectionPartyDetail(){
       </div>
     </div>`).join('') : `<div class="empty">अभी कोई एंट्री नहीं है</div>`;
 
+  const today = todayStr();
+  const debtorBills = computePartyBills(name, 'debtor');
+  const creditorBills = computePartyBills(name, 'creditor');
+  const billWiseHtml = billWiseSectionHtml(debtorBills, 'debtor', today) + billWiseSectionHtml(creditorBills, 'creditor', today);
+
   return `
   <button class="btn-outline" style="margin-bottom:12px;" onclick="state.section='parties';render();">← खाता लिस्ट पर वापस</button>
   <div class="card">
@@ -1205,6 +1275,7 @@ function sectionPartyDetail(){
       <div class="val ${balClass}">${fmtMoney(Math.abs(balance))}</div>
     </div>
   </div>
+  ${billWiseHtml}
   <div class="card">
     <div class="row2">
       <button class="submit-btn" style="background:var(--red);margin:0;" onclick="partyQuickAction('${escapeAttr(name)}','credit_given')">🔴 उधार दिया</button>
@@ -1219,6 +1290,41 @@ function sectionPartyDetail(){
   <div class="card">
     <h2>पूरी हिस्ट्री</h2>
     ${rows}
+  </div>`;
+}
+
+function billWiseSectionHtml(bills, kind, today){
+  if(!bills.length) return '';
+  const pending = bills.filter(b=>b.remaining>0.5);
+  const cleared = bills.filter(b=>b.remaining<=0.5);
+  const title = kind==='debtor' ? '🔴 बिल-वार बकाया (देनदार — जो लेना है)' : '🔵 बिल-वार बकाया (लेनदार — जो देना है)';
+
+  const pendingRows = pending.length ? pending.map(b=>{
+    const dateLabel = b.isOpening ? 'शुरूआती बैलेंस' : fmtDate(b.date);
+    const daysLabel = b.isOpening ? '' : `<div class="note" style="color:var(--red);font-weight:600;">${daysBetween(b.date, today)} दिन हो गए</div>`;
+    return `<div class="entry">
+      <div>
+        <span class="party">${dateLabel}</span>
+        ${b.note?`<div class="note">${escapeHtml(b.note)}</div>`:''}
+        <div class="note">कुल बिल: ${fmtMoney(b.amount)}</div>
+      </div>
+      <div style="text-align:right;">
+        <span class="amt neg">${fmtMoney(b.remaining)}</span>
+        <div class="note">बकाया</div>
+        ${daysLabel}
+      </div>
+    </div>`;
+  }).join('') : `<div class="empty">कोई बकाया बिल नहीं — सब क्लियर है ✅</div>`;
+
+  const clearedTotal = cleared.reduce((s,b)=>s+b.amount,0);
+  const clearedHtml = cleared.length ? `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">✅ ${cleared.length} बिल पूरी तरह चुकता हो चुके हैं (कुल ${fmtMoney(clearedTotal)}) — क्लियर हो चुके बिलों के दिन नहीं दिखाए जाते।</p>` : '';
+
+  return `
+  <div class="card">
+    <h2>${title}</h2>
+    <p style="font-size:12px;color:var(--ink-soft);margin:0 0 10px;">पेमेंट हमेशा सबसे पुराने बिल से पहले क्लियर होती है (FIFO)।</p>
+    ${pendingRows}
+    ${clearedHtml}
   </div>`;
 }
 
@@ -1890,7 +1996,8 @@ function sectionBalanceSheet(){
 
   const totalCash = perShop.reduce((s,p)=>s+p.cum.cash,0);
   const totalBank = perShop.reduce((s,p)=>s+p.cum.bank,0);
-  const totalStockValue = perShop.reduce((s,p)=>s+p.stock.reduce((ss,it)=>ss+((it.costPrice||0)*(it.qty||0)),0),0);
+  const totalStockValue = perShop.reduce((s,p)=>s+p.stock.reduce((ss,it)=>ss+((it.costPrice||0)*(it.qty||0)),0),0)
+    + perShop.reduce((s,p)=>s+computeManualStockValue(p.id),0);
   const totalDebtors = perShop.reduce((s,p)=>{
     const d = Object.values(p.cum.debtors).filter(v=>v>0.5).reduce((a,b)=>a+b,0);
     return s+d;
@@ -2479,11 +2586,11 @@ async function saveStock(){
     if(sourceInfo && totalCost>0){
       const itemLabel = (company?(company+' — '):'')+name;
       if(sourceInfo.source==='cash'){
-        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_cash', amount:totalCost, cost:0, date:state.date, party:'', note:'स्टॉक खरीद: '+itemLabel, paymentMode:'cash'});
+        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_cash', amount:totalCost, cost:0, date:state.date, party:'', note:'स्टॉक खरीद: '+itemLabel, paymentMode:'cash', stockLinked:true});
       } else if(sourceInfo.source==='credit'){
-        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_credit', amount:totalCost, cost:0, date:state.date, party:sourceInfo.sourceParty, note:'स्टॉक खरीद: '+itemLabel});
+        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_credit', amount:totalCost, cost:0, date:state.date, party:sourceInfo.sourceParty, note:'स्टॉक खरीद: '+itemLabel, stockLinked:true});
       } else if(sourceInfo.source==='capital'){
-        currentTx().push({id:uid(), ts:Date.now(), type:'capital_invest_stock', amount:totalCost, cost:0, date:state.date, party:'', note:'पूंजी (माल के रूप में): '+itemLabel});
+        currentTx().push({id:uid(), ts:Date.now(), type:'capital_invest_stock', amount:totalCost, cost:0, date:state.date, party:'', note:'पूंजी (माल के रूप में): '+itemLabel, stockLinked:true});
       }
       // source === 'none' → कोई एंट्री नहीं बनेगी
     }
@@ -2704,6 +2811,15 @@ function sectionSettings(){
     <button class="submit-btn" onclick="saveShopInfo()">सेव करें ✓</button>
   </div>
   <div class="card">
+    <h2>📦 अनुमानित स्टॉक वैल्यू (जो ट्रैक नहीं करते)</h2>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">अगर इस दुकान में "स्टॉक" टैब से हर आइटम अलग-अलग ट्रैक नहीं करते (जैसे कपड़े/वैरायटी वाला सामान), तो यहाँ अभी के अंदाज़न कुल स्टॉक की वैल्यू डालें। इसके बाद जो भी "✏️ एंट्री" से बिना स्टॉक चुने सीधे खरीद (खरीदने पर बढ़ेगी) या बिक्री (बिकने पर लागत जितनी घटेगी) एंट्री डालेंगे, वो अपने-आप इसमें जुड़ती-घटती रहेगी — बार-बार मैन्युअल अपडेट करने की ज़रूरत नहीं।</p>
+    <div class="stat balance" style="margin-bottom:10px;"><div class="label">अभी की कुल स्टॉक वैल्यू (ऑटो-कैलकुलेटेड)</div><div class="val">${fmtMoney(computeManualStockValue(state.shop))}</div></div>
+    <label>नई बेस वैल्यू सेट करें (रीसेट/सुधार के लिए)</label>
+    <input type="number" id="shop_manual_stock" value="${shopData.shopInfo.manualStockValue||0}">
+    <button class="submit-btn" onclick="saveManualStockValue()">इसी को नया बेस बनाकर सेव करें ✓</button>
+    <p style="font-size:12px;color:var(--ink-soft);margin-top:6px;">⚠️ यह बटन दबाने पर आज की तारीख़ से नया हिसाब शुरू होगा — पुराना ऑटो-कैलकुलेशन रीसेट हो जाएगा। सिर्फ़ तभी दबाएं जब असली स्टॉक गिनकर सुधार करना हो।</p>
+  </div>
+  <div class="card">
     <h2>शुरूआती (Opening) बैलेंस</h2>
     <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">ऐप शुरू करने से पहले आपकी दुकान में जो नकद और लाभ पहले से था, वो यहाँ डालें ताकि कुल हिसाब सही आए।</p>
     <div class="party-row" style="flex-wrap:wrap;gap:8px;">
@@ -2804,11 +2920,21 @@ async function changePassword(){
 async function saveShopInfo(){
   const address = document.getElementById('shop_address').value.trim();
   const gstNo = document.getElementById('shop_gst').value.trim();
-  if(!state.data[state.shop].shopInfo) state.data[state.shop].shopInfo = {address:'', gstNo:''};
+  if(!state.data[state.shop].shopInfo) state.data[state.shop].shopInfo = {address:'', gstNo:'', manualStockValue:0};
   state.data[state.shop].shopInfo.address = address;
   state.data[state.shop].shopInfo.gstNo = gstNo;
   await saveShop(state.shop);
   alert('दुकान की जानकारी सेव हो गई ✓');
+  renderSection();
+}
+
+async function saveManualStockValue(){
+  const val = parseFloat(document.getElementById('shop_manual_stock').value);
+  if(!state.data[state.shop].shopInfo) state.data[state.shop].shopInfo = {address:'', gstNo:'', manualStockValue:0, manualStockValueDate:''};
+  state.data[state.shop].shopInfo.manualStockValue = isNaN(val) ? 0 : val;
+  state.data[state.shop].shopInfo.manualStockValueDate = state.date;
+  await saveShop(state.shop);
+  alert('स्टॉक वैल्यू सेव हो गई ✓ अब से इसमें बिना स्टॉक-लिंक वाली खरीद/बिक्री एंट्री अपने-आप जुड़ेंगी-घटेंगी।');
   renderSection();
 }
 
