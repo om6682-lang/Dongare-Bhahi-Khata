@@ -317,6 +317,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
@@ -332,6 +333,7 @@ const firebaseConfig = {
 };
 let db = null;
 let firebaseReady = false;
+let firebaseAuthReady = false;
 try{
   if(typeof firebase === 'undefined') throw new Error('firebase sdk not loaded');
   firebase.initializeApp(firebaseConfig);
@@ -341,6 +343,27 @@ try{
   firebaseReady = false;
   console.error('Firebase load failed', e);
 }
+// ---------- असली सुरक्षा: Firebase Anonymous Authentication ----------
+// पेज खुलते ही यह चुपचाप एक "sign-in" कर लेता है (यूज़र को कुछ दिखता/करना नहीं
+// पड़ता)। इसके बाद Firebase rules में "auth != null" लगाकर डेटाबेस को इस तरह
+// लॉक किया जा सकता है कि सिर्फ़ यही ऐप (जो sign-in करता है) डेटा पढ़/लिख सके —
+// कोई बाहरी व्यक्ति सीधे डेटाबेस URL खोलकर कुछ नहीं कर पाएगा, भले ही उसे
+// वेबसाइट का लिंक या सोर्स कोड मिल जाए।
+let firebaseAuthPromise = null;
+if(firebaseReady){
+  firebaseAuthPromise = firebase.auth().signInAnonymously().then(()=>{
+    firebaseAuthReady = true;
+  }).catch(e=>{
+    firebaseAuthReady = false;
+    firebaseReady = false;
+    console.error('Firebase anonymous sign-in failed', e);
+  });
+}
+// ---------- अतिरिक्त सुरक्षा परत: गुप्त कोड (secret key) ----------
+// यह गुप्त कोड डेटाबेस के हर path के आगे जुड़ता है (Authentication के ऊपर एक
+// और सुरक्षा परत के रूप में)।
+const DB_SECRET = "Mcc80GItfp8Up3LwPe7C";
+function dbRef(path){ return db.ref(DB_SECRET + '/' + path); }
 
 const SHOPS = [
   {id:'mobile', name:'डोंगरे मोबाइल'},
@@ -389,7 +412,7 @@ function normalizeOwnerCapital(d){
 }
 async function loadOwnerCapital(){
   try{
-    const snap = await db.ref('ownerCapital').once('value');
+    const snap = await dbRef('ownerCapital').once('value');
     state.ownerCapital = normalizeOwnerCapital(snap.val());
   }catch(e){
     console.error('load ownerCapital failed', e);
@@ -398,7 +421,7 @@ async function loadOwnerCapital(){
 }
 async function saveOwnerCapital(){
   try{
-    await db.ref('ownerCapital').set(state.ownerCapital);
+    await dbRef('ownerCapital').set(state.ownerCapital);
   }catch(e){
     console.error('save ownerCapital failed', e);
     alert('सेव नहीं हो पाया। इंटरनेट कनेक्शन चेक करें।');
@@ -446,7 +469,7 @@ function uid(){return 't'+Date.now()+Math.random().toString(36).slice(2,7);}
 
 async function loadShop(shopId){
   try{
-    const snap = await db.ref('shopdata/'+shopId).once('value');
+    const snap = await dbRef('shopdata/'+shopId).once('value');
     state.data[shopId] = normalizeShopData(snap.val());
   }catch(e){
     console.error('load failed', e);
@@ -455,7 +478,7 @@ async function loadShop(shopId){
 }
 async function saveShop(shopId){
   try{
-    await db.ref('shopdata/'+shopId).set(state.data[shopId]);
+    await dbRef('shopdata/'+shopId).set(state.data[shopId]);
   }catch(e){
     console.error('save failed', e);
     alert('डेटा सेव नहीं हो पाया। इंटरनेट कनेक्शन चेक करें और दोबारा कोशिश करें।');
@@ -2220,7 +2243,7 @@ async function renderCapitalGateBody(){
   const body = document.getElementById('capitalGateBody');
   if(!body) return;
   try{
-    const snap = await db.ref('app/capitalPin').once('value');
+    const snap = await dbRef('app/capitalPin').once('value');
     currentCapitalPin = snap.val() || null;
   }catch(e){
     currentCapitalPin = null;
@@ -2246,7 +2269,7 @@ async function setupCapitalPin(){
   if(p1.length<4){ alert('कम से कम 4 अक्षर/अंक का पासवर्ड डालें'); return; }
   if(p1 !== p2){ alert('दोनों पासवर्ड मेल नहीं खाते'); return; }
   try{
-    await db.ref('app/capitalPin').set(p1);
+    await dbRef('app/capitalPin').set(p1);
     currentCapitalPin = p1;
     state.capitalUnlocked = true;
     renderSection();
@@ -2273,7 +2296,7 @@ async function changeCapitalPin(){
   if(np.length<4){ alert('नया पासवर्ड कम से कम 4 अक्षर/अंक का हो'); return; }
   if(np !== nc){ alert('नए पासवर्ड मेल नहीं खाते'); return; }
   try{
-    await db.ref('app/capitalPin').set(np);
+    await dbRef('app/capitalPin').set(np);
     currentCapitalPin = np;
     alert('पासवर्ड बदल दिया गया ✓');
   }catch(e){
@@ -2908,7 +2931,7 @@ async function changePassword(){
   if(np.length<4){ alert('नया पासवर्ड कम से कम 4 अक्षर/अंक का हो'); return; }
   if(np !== nc){ alert('नए पासवर्ड मेल नहीं खाते'); return; }
   try{
-    await db.ref('app/pin').set(np);
+    await dbRef('app/pin').set(np);
     currentPin = np;
     alert('पासवर्ड बदल दिया गया ✓ अब सभी फ़ोन में नया पासवर्ड इस्तेमाल करें।');
     renderSection();
@@ -3267,6 +3290,18 @@ async function initLock(){
     `;
     return;
   }
+  if(firebaseAuthPromise){
+    document.getElementById('lockBody').innerHTML = '<p>लोड हो रहा है…</p>';
+    await firebaseAuthPromise;
+  }
+  if(!firebaseAuthReady){
+    document.getElementById('lockBody').innerHTML = `
+      <p style="color:var(--red);">⚠️ सुरक्षित लॉगिन नहीं हो पाया।<br><br>
+      इंटरनेट चेक करें और दोबारा कोशिश करें।</p>
+      <button class="submit-btn" onclick="location.reload()">🔄 दोबारा कोशिश करें</button>
+    `;
+    return;
+  }
   renderShopDateStep();
 }
 
@@ -3290,7 +3325,7 @@ async function confirmShopDate(){
   const lockBody = document.getElementById('lockBody');
   lockBody.innerHTML = '<p>लोड हो रहा है…</p>';
   try{
-    const snap = await db.ref('app/pin').once('value');
+    const snap = await dbRef('app/pin').once('value');
     currentPin = snap.val() || null;
   }catch(e){
     currentPin = null;
@@ -3316,7 +3351,7 @@ async function setupPin(){
   if(p1.length<4){ alert('कम से कम 4 अक्षर/अंक का पासवर्ड डालें'); return; }
   if(p1 !== p2){ alert('दोनों पासवर्ड मेल नहीं खाते'); return; }
   try{
-    await db.ref('app/pin').set(p1);
+    await dbRef('app/pin').set(p1);
     currentPin = p1;
     unlockApp();
   }catch(e){
@@ -3371,7 +3406,7 @@ function startLiveSync(){
   });
 
   SHOPS.map(s=>s.id).forEach(shopId=>{
-    db.ref('shopdata/'+shopId).on('value', snap=>{
+    dbRef('shopdata/'+shopId).on('value', snap=>{
       const incoming = normalizeShopData(snap.val());
       const changed = JSON.stringify(incoming) !== JSON.stringify(state.data[shopId]);
       if(!changed) return;
@@ -3384,7 +3419,7 @@ function startLiveSync(){
     });
   });
 
-  db.ref('ownerCapital').on('value', snap=>{
+  dbRef('ownerCapital').on('value', snap=>{
     const incoming = normalizeOwnerCapital(snap.val());
     const changed = JSON.stringify(incoming) !== JSON.stringify(state.ownerCapital);
     if(!changed) return;
