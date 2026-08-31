@@ -1657,7 +1657,8 @@ function sectionDashboard(){
 
     <div class="dash-grid">
       <div class="dash-card"><div class="lbl">कुल बिक्री</div><div class="num pos">${fmtMoney(totSale)}</div></div>
-      <div class="dash-card"><div class="lbl">कुल खर्च</div><div class="num neg">${fmtMoney(totExpense+totPurchase)}</div></div>
+      <div class="dash-card"><div class="lbl">कुल खर्च</div><div class="num neg">${fmtMoney(totExpense)}</div></div>
+      <div class="dash-card"><div class="lbl">कुल खरीदी (माल/स्टॉक)</div><div class="num" style="color:#2C5282;">${fmtMoney(totPurchase)}</div></div>
       <div class="dash-card wide" style="background:linear-gradient(135deg,#fff,#FBF3E1);">
         <div class="lbl">शुद्ध लाभ (${periodLabel})</div>
         <div class="num" style="font-size:24px;" >${totProfit>=0?'':''}<span class="${totProfit>=0?'pos':'neg'}">${fmtMoney(totProfit)}</span></div>
