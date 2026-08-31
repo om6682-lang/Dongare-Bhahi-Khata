@@ -153,6 +153,30 @@
   .stat.balance .val{font-size:26px;color:var(--maroon-deep);}
   .pos{color:var(--green);}
   .neg{color:var(--red);}
+  .dash-period{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;}
+  .dash-period button{
+    flex:1;min-width:70px;padding:8px 6px;border-radius:8px;border:1px solid var(--paper-line);
+    background:#fff;color:var(--ink-soft);font-weight:600;font-size:13px;cursor:pointer;
+  }
+  .dash-period button.active{background:var(--maroon);color:#fff;border-color:var(--maroon);}
+  .dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;}
+  .dash-card{
+    background:#fff;border:1px solid var(--paper-line);border-radius:12px;padding:12px;
+    text-align:center;
+  }
+  .dash-card .lbl{font-size:12px;color:var(--ink-soft);margin-bottom:6px;}
+  .dash-card .num{font-size:19px;font-weight:700;color:var(--maroon-deep);}
+  .dash-card.wide{grid-column:span 2;}
+  .dash-shop-row{
+    display:flex;justify-content:space-between;align-items:center;padding:10px 0;
+    border-bottom:1px dashed var(--paper-line);
+  }
+  .dash-shop-row:last-child{border-bottom:none;}
+  .dash-shop-row .sname{font-weight:600;color:var(--ink);}
+  .dash-bars{display:flex;align-items:flex-end;gap:3px;height:110px;margin-top:10px;overflow-x:auto;padding-bottom:4px;}
+  .dash-bar-col{display:flex;flex-direction:column;align-items:center;min-width:16px;flex:1;}
+  .dash-bar{width:100%;max-width:22px;background:linear-gradient(180deg,var(--maroon),var(--maroon-deep));border-radius:3px 3px 0 0;}
+  .dash-bar-lbl{font-size:9px;color:var(--ink-soft);margin-top:3px;writing-mode:vertical-rl;transform:rotate(180deg);height:34px;}
   label{display:block;font-size:13px;color:var(--ink-soft);margin:10px 0 4px;font-weight:600;}
   select,input,textarea{
     width:100%;
@@ -384,16 +408,14 @@ const TYPE_META = {
   capital_invest_stock: {label:'पूंजी निवेश (माल के रूप में)', tag:'tag-purchase', needsParty:false, needsCost:false, kind:'capital_invest_stock'},
   bank_deposit: {label:'बैंक में जमा (कैश → बैंक)', tag:'tag-purchase', needsParty:false, needsCost:false, kind:'bank_deposit'},
   bank_withdraw: {label:'बैंक से निकासी (बैंक → कैश)', tag:'tag-receive_due', needsParty:false, needsCost:false, kind:'bank_withdraw'},
-  card_withdraw: {label:'💳 क्रेडिट कार्ड से निकासी (कार्ड → कैश/बैंक)', tag:'tag-receive_due', needsParty:false, needsCost:false, kind:'card_withdraw'},
-  card_payment: {label:'💳 क्रेडिट कार्ड बिल भुगतान (कैश/बैंक → कार्ड चुकाया)', tag:'tag-pay_due', needsParty:false, needsCost:false, kind:'card_payment'},
 };
-// जिन प्रकार की एंट्री में सीधे "क्रेडिट कार्ड से भुगतान" वाला विकल्प भी दिया जाए
-// (यानी दुकानदार ने वस्तु/खर्च/उधार का भुगतान सीधे कार्ड से किया, कैश/बैंक पर कोई असर नहीं, कार्ड पर बकाया बढ़ा)
-const CARD_MODE_TYPES = ['purchase_cash','expense','pay_due'];
 
 let state = {
   shop: SHOPS[0].id,
-  section: 'today',
+  section: 'dashboard',
+  dashboardPeriod: 'today',
+  dashboardFrom: todayStr(),
+  dashboardTo: todayStr(),
   date: todayStr(),
   data: Object.fromEntries(SHOPS.map(s=>[s.id, emptyShopData()])),
   editingStockId: null,
@@ -434,16 +456,15 @@ async function saveOwnerCapital(){
 }
 
 function emptyShopData(){
-  return { transactions: [], stock: [], opening: { cash: 0, bank: 0, card: 0, profit: 0, parties: {}, capitalInvest: 0, capitalWithdraw: 0 }, partyInfo: {}, shopInfo: { address: '', gstNo: '', manualStockValue: 0 } };
+  return { transactions: [], stock: [], opening: { cash: 0, bank: 0, profit: 0, parties: {}, capitalInvest: 0, capitalWithdraw: 0 }, partyInfo: {}, shopInfo: { address: '', gstNo: '', manualStockValue: 0 } };
 }
 function normalizeShopData(d){
   if(!d || typeof d !== 'object') d = {};
   if(!Array.isArray(d.transactions)) d.transactions = [];
   if(!Array.isArray(d.stock)) d.stock = [];
-  if(!d.opening || typeof d.opening !== 'object') d.opening = {cash:0, bank:0, card:0, profit:0, parties:{}, capitalInvest:0, capitalWithdraw:0};
+  if(!d.opening || typeof d.opening !== 'object') d.opening = {cash:0, bank:0, profit:0, parties:{}, capitalInvest:0, capitalWithdraw:0};
   if(typeof d.opening.cash !== 'number' || isNaN(d.opening.cash)) d.opening.cash = 0;
   if(typeof d.opening.bank !== 'number' || isNaN(d.opening.bank)) d.opening.bank = 0;
-  if(typeof d.opening.card !== 'number' || isNaN(d.opening.card)) d.opening.card = 0;
   if(typeof d.opening.profit !== 'number' || isNaN(d.opening.profit)) d.opening.profit = 0;
   if(typeof d.opening.capitalInvest !== 'number' || isNaN(d.opening.capitalInvest)) d.opening.capitalInvest = 0;
   if(typeof d.opening.capitalWithdraw !== 'number' || isNaN(d.opening.capitalWithdraw)) d.opening.capitalWithdraw = 0;
@@ -495,7 +516,7 @@ function currentTx(){ return state.data[state.shop].transactions; }
 function currentStock(){ return state.data[state.shop].stock; }
 
 function computeTotals(list){
-  let cash=0, bank=0, card=0, profit=0, totalSaleAmt=0, totalCostAmt=0, totalPurchaseAmt=0, totalExpenseAmt=0;
+  let cash=0, bank=0, profit=0, totalSaleAmt=0, totalCostAmt=0, totalPurchaseAmt=0, totalExpenseAmt=0;
   let totalCapitalInvest=0, totalCapitalWithdraw=0;
   const debtors={}, creditors={};
   list.forEach(t=>{
@@ -513,25 +534,18 @@ function computeTotals(list){
       profit += (amt - cost);
       totalSaleAmt += amt; totalCostAmt += cost;
     } else if(t.type==='purchase_cash'){
-      // कार्ड से सीधे वस्तु/माल का भुगतान: कैश/बैंक पर असर नहीं, कार्ड पर बकाया बढ़ेगा
-      if(mode==='card') card += amt;
-      else if(mode==='bank') bank -= amt; else cash -= amt;
+      if(mode==='bank') bank -= amt; else cash -= amt;
       totalPurchaseAmt += amt;
     } else if(t.type==='purchase_credit'){
       creditors[t.party] = (creditors[t.party]||0) + amt; totalPurchaseAmt += amt;
     } else if(t.type==='expense'){
-      // कार्ड से सीधे खर्च का भुगतान: कैश/बैंक पर असर नहीं, कार्ड पर बकाया बढ़ेगा
-      if(mode==='card') card += amt;
-      else if(mode==='bank') bank -= amt; else cash -= amt;
+      if(mode==='bank') bank -= amt; else cash -= amt;
       profit -= amt; totalExpenseAmt += amt;
     } else if(t.type==='receive_due'){
       if(mode==='bank') bank += amt; else cash += amt;
       debtors[t.party] = (debtors[t.party]||0) - amt;
     } else if(t.type==='pay_due'){
-      // लेनदार (व्यापारी) को सीधे कार्ड से भुगतान: कैश/बैंक पर असर नहीं, कार्ड पर बकाया बढ़ेगा,
-      // व्यापारी का हिसाब चुक जाएगा
-      if(mode==='card') card += amt;
-      else if(mode==='bank') bank -= amt; else cash -= amt;
+      if(mode==='bank') bank -= amt; else cash -= amt;
       creditors[t.party] = (creditors[t.party]||0) - amt;
     } else if(t.type==='credit_given'){
       debtors[t.party] = (debtors[t.party]||0) + amt;
@@ -549,17 +563,9 @@ function computeTotals(list){
       bank -= amt; cash += amt;
     } else if(t.type==='capital_invest_stock'){
       totalCapitalInvest += amt;
-    } else if(t.type==='card_withdraw'){
-      // क्रेडिट कार्ड से निकासी (कैश एडवांस): पैसा कैश/बैंक में आया, कार्ड पर बकाया उतना ही बढ़ा
-      if(mode==='bank') bank += amt; else cash += amt;
-      card += amt;
-    } else if(t.type==='card_payment'){
-      // कार्ड का बिल कैश/बैंक से चुकाया: कैश/बैंक घटा, कार्ड पर बकाया उतना ही घटा
-      if(mode==='bank') bank -= amt; else cash -= amt;
-      card -= amt;
     }
   });
-  return {cash, bank, card, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
+  return {cash, bank, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
 }
 
 function computeCumulative(shopId){
@@ -578,7 +584,6 @@ function computeCumulative(shopId){
   return Object.assign({}, base, {
     cash: base.cash + (Number(opening.cash)||0),
     bank: base.bank + (Number(opening.bank)||0),
-    card: base.card + (Number(opening.card)||0),
     profit: base.profit + (Number(opening.profit)||0),
     totalCapitalInvest: base.totalCapitalInvest + (Number(opening.capitalInvest)||0),
     totalCapitalWithdraw: base.totalCapitalWithdraw + (Number(opening.capitalWithdraw)||0),
@@ -618,6 +623,7 @@ function renderTabs(){
 }
 function renderNav(){
   const sections = [
+    {id:'dashboard', label:'🏠 डैशबोर्ड'},
     {id:'today', label:'📒 आज'},
     {id:'entry', label:'✏️ एंट्री'},
     {id:'invoice', label:'🧾 बिल'},
@@ -654,7 +660,8 @@ function changeDate(delta){
 
 function renderSection(){
   const c = document.getElementById('content');
-  if(state.section==='today') c.innerHTML = sectionToday();
+  if(state.section==='dashboard') c.innerHTML = sectionDashboard();
+  else if(state.section==='today') c.innerHTML = sectionToday();
   else if(state.section==='entry') c.innerHTML = sectionEntry();
   else if(state.section==='invoice') c.innerHTML = sectionInvoice();
   else if(state.section==='stock') c.innerHTML = sectionStock();
@@ -693,15 +700,10 @@ function sectionToday(){
       amtHtml = `<span class="amt" style="color:#2C5282;">-${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;">बैंक में जमा</div>`;
     } else if(t.type==='bank_withdraw'){
       amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;">बैंक से निकासी</div>`;
-    } else if(t.type==='card_withdraw'){
-      amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#8A5A15;">💳 कार्ड बकाया बढ़ा</div>`;
-    } else if(t.type==='card_payment'){
-      amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#8A5A15;">💳 कार्ड बकाया घटा</div>`;
     } else {
       amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span>`;
     }
-    const bankTag = (t.paymentMode==='bank') ? `<div class="note" style="text-align:right;color:#2C5282;">🏦 बैंक</div>`
-      : (t.paymentMode==='card') ? `<div class="note" style="text-align:right;color:#8A5A15;">💳 सीधे कार्ड से भुगतान (कार्ड बकाया बढ़ा)</div>` : '';
+    const bankTag = (t.paymentMode==='bank') ? `<div class="note" style="text-align:right;color:#2C5282;">🏦 बैंक</div>` : '';
     return `<div class="entry">
       <div>
         <span class="type-tag ${meta.tag}">${meta.label}</span><br>
@@ -727,8 +729,7 @@ function sectionToday(){
       <div class="stat"><div class="label">आज लाभ/हानि</div><div class="val ${tot.profit>=0?'pos':'neg'}">${fmtMoney(tot.profit)}</div></div>
       <div class="stat"><div class="label">आज नकद बदलाव</div><div class="val ${tot.cash>=0?'pos':'neg'}">${fmtMoney(tot.cash)}</div></div>
       <div class="stat balance"><div class="label">कुल सिल्लक (कैश)</div><div class="val">${fmtMoney(allTot.cash)}</div></div>
-      <div class="stat balance"><div class="label">🏦 कुल बैंक बैलेंस</div><div class="val">${fmtMoney(allTot.bank)}</div></div>
-      <div class="stat balance" style="grid-column:span 2;"><div class="label">💳 क्रेडिट कार्ड बकाया</div><div class="val ${allTot.card>0?'neg':''}">${fmtMoney(allTot.card)}</div></div>
+      <div class="stat balance" style="grid-column:span 2;"><div class="label">🏦 कुल बैंक बैलेंस</div><div class="val">${fmtMoney(allTot.bank)}</div></div>
     </div>
   </div>
   <div class="card">
@@ -773,8 +774,6 @@ function sectionEntry(){
       <option value="creditor_scheme">लेनदार से स्कीम/छूट मिली</option>
       <option value="bank_deposit">बैंक में जमा (कैश → बैंक)</option>
       <option value="bank_withdraw">बैंक से निकासी (बैंक → कैश)</option>
-      <option value="card_withdraw">💳 क्रेडिट कार्ड से निकासी (कार्ड → कैश/बैंक)</option>
-      <option value="card_payment">💳 क्रेडिट कार्ड बिल भुगतान (कैश/बैंक → कार्ड चुकाया)</option>
       <option value="capital_invest">पूंजी निवेश (मालिक ने पैसा डाला)</option>
       <option value="capital_withdraw">पूंजी निकासी (मालिक ने पैसा निकाला)</option>
     </select>
@@ -1515,6 +1514,153 @@ function sharePartyReport(name){
   }
 }
 
+function getPeriodRange(period){
+  const today = todayStr();
+  if(period==='today') return {from: today, to: today};
+  if(period==='week'){
+    const d = new Date(today+'T00:00:00');
+    const day = d.getDay();
+    const diffToMonday = (day===0?6:day-1);
+    const monday = new Date(d); monday.setDate(d.getDate()-diffToMonday);
+    return {from: ymd(monday), to: today};
+  }
+  if(period==='month'){
+    const d = new Date(today+'T00:00:00');
+    const first = new Date(d.getFullYear(), d.getMonth(), 1);
+    return {from: ymd(first), to: today};
+  }
+  return {from: state.dashboardFrom||today, to: state.dashboardTo||today};
+}
+function ymd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+function switchDashboardPeriod(period){
+  state.dashboardPeriod = period;
+  const r = getPeriodRange(period);
+  state.dashboardFrom = r.from;
+  state.dashboardTo = r.to;
+  renderSection();
+}
+function applyDashboardCustomRange(){
+  const from = document.getElementById('dash_from').value;
+  const to = document.getElementById('dash_to').value;
+  if(!from || !to){ alert('कृपया दोनों दिनांक चुनें'); return; }
+  if(from>to){ alert('"से" वाली दिनांक "तक" वाली दिनांक से बाद की नहीं हो सकती'); return; }
+  state.dashboardPeriod = 'custom';
+  state.dashboardFrom = from;
+  state.dashboardTo = to;
+  renderSection();
+}
+
+function dashboardPeriodTotals(list, from, to){
+  const filtered = list.filter(t=>t.date>=from && t.date<=to);
+  let sale=0, purchase=0, expense=0, profit=0;
+  filtered.forEach(t=>{
+    const meta = TYPE_META[t.type];
+    if(!meta) return;
+    const amt = t.amount||0, cost = t.cost||0;
+    if(meta.kind==='sale'){ sale += amt; profit += (amt-cost); }
+    else if(meta.kind==='purchase'){ purchase += amt; }
+    else if(meta.kind==='expense'){ expense += amt; profit -= amt; }
+  });
+  return {sale, purchase, expense, profit, count: filtered.length};
+}
+
+function sectionDashboard(){
+  const period = state.dashboardPeriod || 'today';
+  const from = state.dashboardFrom, to = state.dashboardTo;
+
+  let totSale=0, totPurchase=0, totExpense=0, totProfit=0;
+  let totCash=0, totBank=0, totDebtor=0, totCreditor=0;
+  const shopRows = SHOPS.map(s=>{
+    const pt = dashboardPeriodTotals(state.data[s.id].transactions, from, to);
+    const cum = computeCumulative(s.id);
+    totSale += pt.sale; totPurchase += pt.purchase; totExpense += pt.expense; totProfit += pt.profit;
+    totCash += cum.cash; totBank += cum.bank;
+    const debtorSum = Object.values(cum.debtors||{}).reduce((a,b)=>a+b,0);
+    const creditorSum = Object.values(cum.creditors||{}).reduce((a,b)=>a+b,0);
+    totDebtor += debtorSum; totCreditor += creditorSum;
+    return {name:s.name, ...pt, cash:cum.cash, bank:cum.bank};
+  });
+
+  // दैनिक बिक्री ग्राफ (period की सीमा के अंदर, दोनों दुकानों को मिलाकर)
+  const dayMap = {};
+  SHOPS.forEach(s=>{
+    state.data[s.id].transactions.forEach(t=>{
+      if(t.date<from || t.date>to) return;
+      const meta = TYPE_META[t.type];
+      if(!meta || meta.kind!=='sale') return;
+      dayMap[t.date] = (dayMap[t.date]||0) + (t.amount||0);
+    });
+  });
+  const days = Object.keys(dayMap).sort();
+  const maxVal = Math.max(1, ...days.map(d=>dayMap[d]));
+  const barsHtml = days.length ? days.map(d=>{
+    const h = Math.round((dayMap[d]/maxVal)*100);
+    const [,m,dd] = d.split('-');
+    return `<div class="dash-bar-col">
+      <div style="flex:1;display:flex;align-items:flex-end;width:100%;">
+        <div class="dash-bar" style="height:${h}%;" title="${fmtDate(d)}: ${fmtMoney(dayMap[d])}"></div>
+      </div>
+      <div class="dash-bar-lbl">${dd}/${m}</div>
+    </div>`;
+  }).join('') : '<div style="color:var(--ink-soft);font-size:13px;padding:20px 0;">इस अवधि में कोई बिक्री नहीं</div>';
+
+  const periodLabel = period==='today' ? 'आज' : period==='week' ? 'इस हफ़्ते' : period==='month' ? 'इस महीने' : (fmtDate(from)+' से '+fmtDate(to));
+
+  return `
+  <div class="card">
+    <h2>🏠 डैशबोर्ड</h2>
+    <div class="dash-period">
+      <button class="${period==='today'?'active':''}" onclick="switchDashboardPeriod('today')">आज</button>
+      <button class="${period==='week'?'active':''}" onclick="switchDashboardPeriod('week')">हफ़्ता</button>
+      <button class="${period==='month'?'active':''}" onclick="switchDashboardPeriod('month')">महीना</button>
+      <button class="${period==='custom'?'active':''}" onclick="switchDashboardPeriod('custom')">कस्टम</button>
+    </div>
+    ${period==='custom' ? `
+    <div class="row2" style="margin-bottom:10px;">
+      <div><label>से</label><input type="date" id="dash_from" value="${from}"></div>
+      <div><label>तक</label><input type="date" id="dash_to" value="${to}"></div>
+    </div>
+    <button class="submit-btn" style="margin-bottom:14px;" onclick="applyDashboardCustomRange()">लागू करें ✓</button>
+    ` : ''}
+    <div style="font-size:13px;color:var(--ink-soft);margin-bottom:10px;">📅 अवधि: <b>${periodLabel}</b> (दोनों दुकानें मिलाकर)</div>
+
+    <div class="dash-grid">
+      <div class="dash-card"><div class="lbl">कुल बिक्री</div><div class="num pos">${fmtMoney(totSale)}</div></div>
+      <div class="dash-card"><div class="lbl">कुल खर्च</div><div class="num neg">${fmtMoney(totExpense+totPurchase)}</div></div>
+      <div class="dash-card wide" style="background:linear-gradient(135deg,#fff,#FBF3E1);">
+        <div class="lbl">शुद्ध लाभ (${periodLabel})</div>
+        <div class="num" style="font-size:24px;" >${totProfit>=0?'':''}<span class="${totProfit>=0?'pos':'neg'}">${fmtMoney(totProfit)}</span></div>
+      </div>
+      <div class="dash-card"><div class="lbl">कुल नकद (कैश)</div><div class="num">${fmtMoney(totCash)}</div></div>
+      <div class="dash-card"><div class="lbl">कुल बैंक बैलेंस</div><div class="num">${fmtMoney(totBank)}</div></div>
+      <div class="dash-card"><div class="lbl">कुल देनदार (आना है)</div><div class="num pos">${fmtMoney(totDebtor)}</div></div>
+      <div class="dash-card"><div class="lbl">कुल लेनदार (देना है)</div><div class="num neg">${fmtMoney(totCreditor)}</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>📊 दैनिक बिक्री ग्राफ (${periodLabel})</h2>
+    <div class="dash-bars">${barsHtml}</div>
+  </div>
+
+  <div class="card">
+    <h2>🏪 दुकान-वार सारांश (${periodLabel})</h2>
+    ${shopRows.map(r=>`
+      <div class="dash-shop-row">
+        <div>
+          <div class="sname">${r.name}</div>
+          <div style="font-size:12px;color:var(--ink-soft);">बिक्री ${fmtMoney(r.sale)} · खर्च ${fmtMoney(r.expense+r.purchase)}</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="${r.profit>=0?'pos':'neg'}" style="font-weight:700;">${fmtMoney(r.profit)}</div>
+          <div style="font-size:11px;color:var(--ink-soft);">कैश ${fmtMoney(r.cash)} · बैंक ${fmtMoney(r.bank)}</div>
+        </div>
+      </div>
+    `).join('')}
+  </div>`;
+}
+
 function sectionSummary(){
   const list = currentTx();
   const tot = computeTotals(list);
@@ -1547,7 +1693,6 @@ function sectionSummary(){
       <div class="stat" style="grid-column:span 2;"><div class="label">कुल लाभ/हानि (शुरूआती लाभ + बिक्री − लागत − खर्चा)</div><div class="val ${cum.profit>=0?'pos':'neg'}" style="font-size:24px;">${fmtMoney(cum.profit)}</div></div>
       <div class="stat balance"><div class="label">कुल सिल्लक (नकद हाथ में)</div><div class="val">${fmtMoney(cum.cash)}</div></div>
       <div class="stat balance"><div class="label">🏦 कुल बैंक बैलेंस</div><div class="val">${fmtMoney(cum.bank)}</div></div>
-      <div class="stat balance" style="grid-column:span 2;"><div class="label">💳 क्रेडिट कार्ड बकाया</div><div class="val ${cum.card>0?'neg':''}">${fmtMoney(cum.card)}</div></div>
     </div>
   </div>
   <div class="card">
@@ -1575,8 +1720,7 @@ function shareShopReport(){
   text += `दुकान खर्चा: ${fmtMoney(tot.totalExpenseAmt)}\n`;
   text += `कुल लाभ/हानि: ${fmtMoney(cum.profit)}\n`;
   text += `कुल सिल्लक (नकद): ${fmtMoney(cum.cash)}\n`;
-  text += `🏦 कुल बैंक बैलेंस: ${fmtMoney(cum.bank)}\n`;
-  text += `💳 क्रेडिट कार्ड बकाया: ${fmtMoney(cum.card)}\n\n`;
+  text += `🏦 कुल बैंक बैलेंस: ${fmtMoney(cum.bank)}\n\n`;
   text += `कुल पावना (देनदार): ${fmtMoney(totalDebtor)}\n`;
   text += `कुल देय (लेनदार): ${fmtMoney(totalCreditor)}\n`;
   text += `\n— डोंगरे बही-खाता`;
@@ -2051,7 +2195,6 @@ function sectionBalanceSheet(){
 
   const totalCash = perShop.reduce((s,p)=>s+p.cum.cash,0);
   const totalBank = perShop.reduce((s,p)=>s+p.cum.bank,0);
-  const totalCard = perShop.reduce((s,p)=>s+p.cum.card,0);
   const totalStockValue = perShop.reduce((s,p)=>s+p.stock.reduce((ss,it)=>ss+((it.costPrice||0)*(it.qty||0)),0),0)
     + perShop.reduce((s,p)=>s+computeManualStockValue(p.id),0);
   const totalDebtors = perShop.reduce((s,p)=>{
@@ -2069,11 +2212,11 @@ function sectionBalanceSheet(){
   const netCapital = totalInvest - openingWithdrawSum + totalProfit;
 
   const totalAssets = totalCash + totalBank + totalStockValue + totalDebtors;
-  const totalLiabCapital = totalCreditors + totalCard + netCapital;
+  const totalLiabCapital = totalCreditors + netCapital;
   const difference = totalAssets - totalLiabCapital;
   const isBalanced = Math.abs(difference) < 1;
 
-  state.lastBalanceSheetText = buildBalanceSheetShareText(bothWord, totalCash, totalBank, totalStockValue, totalDebtors, totalCreditors, totalCard, netCapital, totalAssets, totalLiabCapital, difference);
+  state.lastBalanceSheetText = buildBalanceSheetShareText(bothWord, totalCash, totalBank, totalStockValue, totalDebtors, totalCreditors, netCapital, totalAssets, totalLiabCapital, difference);
 
   return `
   <div class="card">
@@ -2091,7 +2234,6 @@ function sectionBalanceSheet(){
   <div class="card">
     <h2>देयताएं + पूंजी (Liabilities + Capital)</h2>
     <div class="party-row"><span class="pname">सुंदरी लेनदार (Sundry Creditors)</span><span class="neg">${fmtMoney(totalCreditors)}</span></div>
-    <div class="party-row"><span class="pname">💳 क्रेडिट कार्ड बकाया</span><span class="neg">${fmtMoney(totalCard)}</span></div>
     <div class="party-row"><span class="pname">👑 मालिक की पूंजी (Owner's Capital)</span><span class="${netCapital>=0?'pos':'neg'}">${fmtMoney(netCapital)}</span></div>
     <div class="total-line"><span>कुल देयताएं + पूंजी</span><span style="font-size:18px;">${fmtMoney(totalLiabCapital)}</span></div>
   </div>
@@ -2105,7 +2247,7 @@ function sectionBalanceSheet(){
   </div>`;
 }
 
-function buildBalanceSheetShareText(bothWord, cash, bank, stockVal, debtors, creditors, card, capital, totalAssets, totalLiabCapital, difference){
+function buildBalanceSheetShareText(bothWord, cash, bank, stockVal, debtors, creditors, capital, totalAssets, totalLiabCapital, difference){
   let text = `⚖️ ${bothWord} — बैलेंस शीट (आज तक)\n\n`;
   text += `संपत्ति (Assets):\n`;
   text += `नकद: ${fmtMoney(cash)}\n`;
@@ -2115,7 +2257,6 @@ function buildBalanceSheetShareText(bothWord, cash, bank, stockVal, debtors, cre
   text += `कुल संपत्ति: ${fmtMoney(totalAssets)}\n\n`;
   text += `देयताएं + पूंजी:\n`;
   text += `लेनदार: ${fmtMoney(creditors)}\n`;
-  text += `क्रेडिट कार्ड बकाया: ${fmtMoney(card)}\n`;
   text += `मालिक की पूंजी: ${fmtMoney(capital)}\n`;
   text += `कुल: ${fmtMoney(totalLiabCapital)}\n\n`;
   text += `— डोंगरे बही-खाता`;
@@ -2899,15 +3040,6 @@ function sectionSettings(){
       <button class="submit-btn" onclick="saveOpeningBank()">बैंक बैलेंस सेव करें</button>
     </div>
     <div class="party-row" style="flex-wrap:wrap;gap:8px;margin-top:8px;">
-      <span style="flex:1;font-size:14px;">💳 शुरूआती क्रेडिट कार्ड बकाया: <b>${fmtMoney(opening.card||0)}</b></span>
-      <button class="del-btn" onclick="toggleBlockEdit('openingCardEdit')" title="एडिट">✎</button>
-    </div>
-    <div id="openingCardEdit" style="display:${state.expandedPartyEdit['openingCardEdit']?'block':'none'};margin-top:8px;">
-      <label>शुरूआती क्रेडिट कार्ड बकाया (₹) — ऐप शुरू करने से पहले कार्ड पर जितना बिल बकाया था</label>
-      <input type="number" id="op_card" value="${opening.card||0}">
-      <button class="submit-btn" onclick="saveOpeningCard()">कार्ड बकाया सेव करें</button>
-    </div>
-    <div class="party-row" style="flex-wrap:wrap;gap:8px;margin-top:8px;">
       <span style="flex:1;font-size:14px;">शुरूआती लाभ: <b>${fmtMoney(opening.profit||0)}</b></span>
       <button class="del-btn" onclick="toggleBlockEdit('openingProfitEdit')" title="एडिट">✎</button>
     </div>
@@ -3017,12 +3149,6 @@ async function saveOpeningBank(){
   await saveShop(state.shop);
   renderSection();
 }
-async function saveOpeningCard(){
-  const val = parseFloat(document.getElementById('op_card').value);
-  state.data[state.shop].opening.card = isNaN(val) ? 0 : val;
-  await saveShop(state.shop);
-  renderSection();
-}
 async function saveOpeningProfit(){
   const val = parseFloat(document.getElementById('op_profit').value);
   state.data[state.shop].opening.profit = isNaN(val) ? 0 : val;
@@ -3102,16 +3228,7 @@ async function importData(event){
   }
 }
 
-const CASH_AFFECTING_TYPES = ['sale_cash','purchase_cash','expense','receive_due','pay_due','capital_invest','capital_withdraw','card_withdraw','card_payment'];
-function paymentModeOptionsHtml(type, selected){
-  selected = selected || 'cash';
-  let html = `<option value="cash" ${selected==='cash'?'selected':''}>कैश (नकद)</option>`;
-  html += `<option value="bank" ${selected==='bank'?'selected':''}>बैंक (चेक/ऑनलाइन/UPI)</option>`;
-  if(CARD_MODE_TYPES.includes(type)){
-    html += `<option value="card" ${selected==='card'?'selected':''}>💳 क्रेडिट कार्ड (सीधे कार्ड से भुगतान)</option>`;
-  }
-  return html;
-}
+const CASH_AFFECTING_TYPES = ['sale_cash','purchase_cash','expense','receive_due','pay_due','capital_invest','capital_withdraw'];
 function toggleFields(){
   const type = document.getElementById('f_type').value;
   const meta = TYPE_META[type];
@@ -3121,11 +3238,6 @@ function toggleFields(){
   if(stockPick) stockPick.style.display = meta.kind==='sale' ? 'block':'none';
   const paymentModeField = document.getElementById('paymentModeField');
   if(paymentModeField) paymentModeField.style.display = CASH_AFFECTING_TYPES.includes(type) ? 'block':'none';
-  const pmSel = document.getElementById('f_payment_mode');
-  if(pmSel){
-    const cur = pmSel.value || 'cash';
-    pmSel.innerHTML = paymentModeOptionsHtml(type, cur);
-  }
   document.getElementById('f_amount_label').textContent = meta.kind==='sale' ? 'बिक्री मूल्य (₹)' : 'राशि (₹)';
 }
 function onStockPick(){
@@ -3244,7 +3356,10 @@ function editTxFormHtml(t){
     <select id="et_type" onchange="toggleEditFields()">${typeOptions}</select>
     <div id="et_paymentModeField">
       <label>भुगतान माध्यम</label>
-      <select id="et_payment_mode">${paymentModeOptionsHtml(t.type, t.paymentMode||'cash')}</select>
+      <select id="et_payment_mode">
+        <option value="cash" ${(t.paymentMode||'cash')==='cash'?'selected':''}>कैश (नकद)</option>
+        <option value="bank" ${t.paymentMode==='bank'?'selected':''}>बैंक (चेक/ऑनलाइन/UPI)</option>
+      </select>
     </div>
     <div class="row2">
       <div>
@@ -3279,11 +3394,6 @@ function toggleEditFields(){
   if(partyField) partyField.style.display = meta.needsParty ? 'block' : 'none';
   if(costField) costField.style.display = meta.needsCost ? 'block' : 'none';
   if(paymentModeField) paymentModeField.style.display = CASH_AFFECTING_TYPES.includes(type) ? 'block' : 'none';
-  const pmSel = document.getElementById('et_payment_mode');
-  if(pmSel){
-    const cur = pmSel.value || 'cash';
-    pmSel.innerHTML = paymentModeOptionsHtml(type, cur);
-  }
 }
 
 function closeEditTx(){
