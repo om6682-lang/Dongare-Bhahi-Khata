@@ -410,10 +410,14 @@ const TYPE_META = {
   bank_withdraw: {label:'बैंक से निकासी (बैंक → कैश)', tag:'tag-receive_due', needsParty:false, needsCost:false, kind:'bank_withdraw'},
   card_withdraw: {label:'💳 क्रेडिट कार्ड से निकासी (कार्ड → कैश/बैंक)', tag:'tag-receive_due', needsParty:false, needsCost:false, kind:'card_withdraw'},
   card_payment: {label:'💳 क्रेडिट कार्ड बिल भुगतान (कैश/बैंक → कार्ड चुकाया)', tag:'tag-pay_due', needsParty:false, needsCost:false, kind:'card_payment'},
+  shop_transfer_give: {label:'🔁 दूसरी दुकान को पैसा दिया (आपसी लेन-देन)', tag:'tag-pay_due', needsParty:true, needsCost:false, kind:'shop_transfer_give'},
+  shop_transfer_take: {label:'🔁 दूसरी दुकान से पैसा लिया (अपने आप बनती है)', tag:'tag-receive_due', needsParty:true, needsCost:false, kind:'shop_transfer_take'},
 };
 // जिन प्रकार की एंट्री में सीधे "क्रेडिट कार्ड से भुगतान" वाला विकल्प भी दिया जाए
 // (यानी दुकानदार ने वस्तु/खर्च/उधार का भुगतान सीधे कार्ड से किया, कैश/बैंक पर कोई असर नहीं, कार्ड पर बकाया बढ़ा)
 const CARD_MODE_TYPES = ['purchase_cash','expense','pay_due'];
+// खर्च की श्रेणियाँ (एंट्री करते वक्त अलग-अलग चुनें, बाकी हर जगह सब मिलाकर "कुल खर्च" में जुड़ेंगी)
+const EXPENSE_CATEGORIES = ['सैलरी','पेट्रोल/डीज़ल','किराया','बिजली बिल','अन्य खर्च'];
 
 let state = {
   shop: SHOPS[0].id,
@@ -584,6 +588,14 @@ function computeTotals(list){
       // कार्ड का बिल कैश/बैंक से चुकाया: कैश/बैंक घटा, कार्ड पर बकाया उतना ही घटा
       if(mode==='bank') bank -= amt; else cash -= amt;
       card -= amt;
+    } else if(t.type==='shop_transfer_give'){
+      // दूसरी दुकान को पैसा दिया: अपनी कैश/बैंक घटी, दूसरी दुकान इस दुकान की "देनदार" बनी
+      if(mode==='bank') bank -= amt; else cash -= amt;
+      debtors[t.party] = (debtors[t.party]||0) + amt;
+    } else if(t.type==='shop_transfer_take'){
+      // दूसरी दुकान से पैसा मिला: अपनी कैश/बैंक बढ़ी, दूसरी दुकान इस दुकान की "लेनदार" बनी
+      if(mode==='bank') bank += amt; else cash += amt;
+      creditors[t.party] = (creditors[t.party]||0) + amt;
     }
   });
   return {cash, bank, card, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
@@ -726,11 +738,16 @@ function sectionToday(){
       amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#8A5A15;">💳 कार्ड बकाया बढ़ा</div>`;
     } else if(t.type==='card_payment'){
       amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#8A5A15;">💳 कार्ड बकाया घटा</div>`;
+    } else if(t.type==='shop_transfer_give'){
+      amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#6B3FA0;">🔁 ${escapeHtml(t.party)} को दिया</div>`;
+    } else if(t.type==='shop_transfer_take'){
+      amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#6B3FA0;">🔁 ${escapeHtml(t.party)} से लिया</div>`;
     } else {
       amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span>`;
     }
     const bankTag = (t.paymentMode==='bank') ? `<div class="note" style="text-align:right;color:#2C5282;">🏦 बैंक</div>`
       : (t.paymentMode==='card') ? `<div class="note" style="text-align:right;color:#8A5A15;">💳 सीधे कार्ड से भुगतान (कार्ड बकाया बढ़ा)</div>` : '';
+    const catTag = (t.type==='expense' && t.expenseCategory) ? `<div class="note" style="text-align:right;">🏷️ ${escapeHtml(t.expenseCategory)}</div>` : '';
     return `<div class="entry">
       <div>
         <span class="type-tag ${meta.tag}">${meta.label}</span><br>
@@ -738,7 +755,7 @@ function sectionToday(){
         ${t.note?`<div class="note">${escapeHtml(t.note)}</div>`:''}
       </div>
       <div style="display:flex;align-items:flex-start;gap:6px;">
-        <div style="text-align:right;">${amtHtml}${bankTag}</div>
+        <div style="text-align:right;">${amtHtml}${bankTag}${catTag}</div>
         <button class="del-btn" onclick="openEditTx('${t.id}')" title="एडिट">✎</button>
         <button class="del-btn" onclick="deleteTx('${t.id}')" title="मिटाएं">✕</button>
       </div>
@@ -804,6 +821,7 @@ function sectionEntry(){
       <option value="bank_withdraw">बैंक से निकासी (बैंक → कैश)</option>
       <option value="card_withdraw">💳 क्रेडिट कार्ड से निकासी (कार्ड → कैश/बैंक)</option>
       <option value="card_payment">💳 क्रेडिट कार्ड बिल भुगतान (कैश/बैंक → कार्ड चुकाया)</option>
+      <option value="shop_transfer_give">🔁 दूसरी दुकान को पैसा दिया (आपसी लेन-देन)</option>
       <option value="capital_invest">पूंजी निवेश (मालिक ने पैसा डाला)</option>
       <option value="capital_withdraw">पूंजी निकासी (मालिक ने पैसा निकाला)</option>
     </select>
@@ -817,6 +835,39 @@ function sectionEntry(){
     <div id="stockPickField">
       <label>स्टॉक से आइटम चुनें (वैकल्पिक) — चुनने पर लागत अपने आप भरेगी और बिकने पर स्टॉक कम होगा</label>
       <select id="f_stock_pick" onchange="onStockPick()">${stockOptionsHtml()}</select>
+      <label>IMEI / सीरियल नंबर (बिक रहे यूनिट का — ज़रूरत हो तो ठीक करें)</label>
+      <div style="display:flex;gap:8px;align-items:stretch;">
+        <input type="text" id="f_stock_sell_imei" placeholder="IMEI (वैकल्पिक)" style="flex:1;">
+        <button class="btn-outline" onclick="openScanner('f_stock_sell_imei')">📷 स्कैन</button>
+      </div>
+    </div>
+    <div id="purchaseStockField">
+      <label style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="f_add_stock_toggle" onchange="togglePurchaseStockFields()"> इस खरीद से स्टॉक भी जोड़ें
+      </label>
+      <div id="purchaseStockDetails" style="display:none;">
+        <label>आइटम का नाम</label>
+        <input type="text" id="f_stock_name" placeholder="जैसे: Samsung M14 / कुर्ता सेट">
+        <label>कंपनी / ब्रांड (वैकल्पिक)</label>
+        <input type="text" id="f_stock_company" list="companyList" placeholder="जैसे: Vivo">
+        <datalist id="companyList">${uniqueStockCompanies().map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
+        <label>फ़ोन प्रकार</label>
+        <select id="f_stock_phoneType">
+          <option value="android">📱 एंड्रॉइड फोन</option>
+          <option value="keypad">☎️ कीपैड फोन</option>
+          <option value="other">📦 अन्य / एक्सेसरी</option>
+        </select>
+        <div class="row2">
+          <div><label>मात्रा (कितने पीस)</label><input type="number" id="f_stock_qty" min="1" value="1" oninput="renderPurchaseImeiInputs()"></div>
+          <div><label>सुझाई बिक्री मूल्य (वैकल्पिक)</label><input type="number" id="f_stock_sell_price" placeholder="0"></div>
+        </div>
+        <div style="font-size:12px;color:var(--ink-soft);margin:2px 0 8px;">ऊपर डाली गई कुल "राशि" ÷ मात्रा = हर पीस की लागत अपने-आप बन जाएगी</div>
+        <div id="purchaseImeiInputsWrap"></div>
+      </div>
+    </div>
+    <div id="expenseCategoryField">
+      <label>खर्च की श्रेणी</label>
+      <select id="f_expense_category">${expenseCategoryOptionsHtml()}</select>
     </div>
     <div class="row2">
       <div>
@@ -831,7 +882,7 @@ function sectionEntry(){
     <label>दिनांक</label>
     <input type="date" id="f_date" value="${state.date}">
     <div id="partyField">
-      <label>नाम (ग्राहक/सप्लायर) — पहले से सेव नाम सुझाव में दिखेंगे</label>
+      <label id="f_party_label">नाम (ग्राहक/सप्लायर) — पहले से सेव नाम सुझाव में दिखेंगे</label>
       <input type="text" id="f_party" list="partyDatalist" placeholder="जैसे: रमेश जी">
       <datalist id="partyDatalist">${partyDatalistHtml()}</datalist>
     </div>
@@ -1580,6 +1631,10 @@ function applyDashboardCustomRange(){
   state.dashboardTo = to;
   renderSection();
 }
+function toggleDashboardExpenseBreakdown(){
+  state.dashboardExpenseOpen = !state.dashboardExpenseOpen;
+  renderSection();
+}
 
 function dashboardPeriodTotals(list, from, to){
   const filtered = list.filter(t=>t.date>=from && t.date<=to);
@@ -1601,6 +1656,7 @@ function sectionDashboard(){
 
   let totSale=0, totPurchase=0, totExpense=0, totProfit=0;
   let totCash=0, totBank=0, totCard=0, totDebtor=0, totCreditor=0;
+  const expenseByCategory = {};
   const shopRows = SHOPS.map(s=>{
     const pt = dashboardPeriodTotals(state.data[s.id].transactions, from, to);
     const cum = computeCumulative(s.id);
@@ -1609,6 +1665,11 @@ function sectionDashboard(){
     const debtorSum = Object.values(cum.debtors||{}).reduce((a,b)=>a+b,0);
     const creditorSum = Object.values(cum.creditors||{}).reduce((a,b)=>a+b,0);
     totDebtor += debtorSum; totCreditor += creditorSum;
+    state.data[s.id].transactions.forEach(t=>{
+      if(t.type!=='expense' || t.date<from || t.date>to) return;
+      const cat = t.expenseCategory || 'अन्य खर्च';
+      expenseByCategory[cat] = (expenseByCategory[cat]||0) + (t.amount||0);
+    });
     return {name:s.name, ...pt, cash:cum.cash, bank:cum.bank};
   });
 
@@ -1657,7 +1718,7 @@ function sectionDashboard(){
 
     <div class="dash-grid">
       <div class="dash-card"><div class="lbl">कुल बिक्री</div><div class="num pos">${fmtMoney(totSale)}</div></div>
-      <div class="dash-card"><div class="lbl">कुल खर्च</div><div class="num neg">${fmtMoney(totExpense)}</div></div>
+      <div class="dash-card" style="cursor:pointer;" onclick="toggleDashboardExpenseBreakdown()"><div class="lbl">कुल खर्च ${state.dashboardExpenseOpen?'▲':'▼'}</div><div class="num neg">${fmtMoney(totExpense)}</div></div>
       <div class="dash-card"><div class="lbl">कुल खरीदी (माल/स्टॉक)</div><div class="num" style="color:#2C5282;">${fmtMoney(totPurchase)}</div></div>
       <div class="dash-card wide" style="background:linear-gradient(135deg,#fff,#FBF3E1);">
         <div class="lbl">शुद्ध लाभ (${periodLabel})</div>
@@ -1669,6 +1730,13 @@ function sectionDashboard(){
       <div class="dash-card"><div class="lbl">कुल लेनदार (देना है)</div><div class="num neg">${fmtMoney(totCreditor)}</div></div>
       <div class="dash-card wide"><div class="lbl">💳 क्रेडिट कार्ड बकाया</div><div class="num ${totCard>0?'neg':''}">${fmtMoney(totCard)}</div></div>
     </div>
+    ${state.dashboardExpenseOpen ? `
+    <div style="margin-top:12px;padding:10px;background:#FBF3E1;border-radius:10px;">
+      <div style="font-size:13px;font-weight:700;color:var(--maroon-deep);margin-bottom:8px;">🏷️ खर्च — श्रेणी-वार (${periodLabel})</div>
+      ${Object.keys(expenseByCategory).length ? Object.entries(expenseByCategory).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>
+        `<div class="party-row"><span class="pname">${escapeHtml(cat)}</span><span class="neg">${fmtMoney(amt)}</span></div>`
+      ).join('') : `<div class="empty">इस अवधि में कोई खर्च नहीं है</div>`}
+    </div>` : ''}
   </div>
 
   <div class="card">
@@ -1819,16 +1887,17 @@ function reportEntryRowHtml(t){
       <div class="note" style="text-align:right;">लागत ${fmtMoney(t.cost||0)} · <span class="${margin>=0?'pos':'neg'}">लाभ ${fmtMoney(margin)}</span></div>`;
   } else if(meta.kind==='purchase'){
     amtHtml = `<span class="amt" style="color:#2C5282;">-${fmtMoney(t.amount)}</span>`;
-  } else if(meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw'){
+  } else if(meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give'){
     amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span>`;
   } else {
     amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span>`;
   }
+  const catNote = (t.type==='expense' && t.expenseCategory) ? ` · ${escapeHtml(t.expenseCategory)}` : '';
   return `<div class="entry">
     <div>
       <span class="type-tag ${meta.tag}">${meta.label}</span><br>
       ${t.party?`<span class="party">${escapeHtml(t.party)}</span>`:''}
-      <div class="note">${fmtDate(t.date)}${t.note?(' · '+escapeHtml(t.note)):''}</div>
+      <div class="note">${fmtDate(t.date)}${t.note?(' · '+escapeHtml(t.note)):''}${catNote}</div>
     </div>
     <div style="text-align:right;">${amtHtml}</div>
   </div>`;
@@ -1903,7 +1972,19 @@ function renderReportResults(type, list, from, to){
     reportTitle = 'खर्च रिपोर्ट';
     const filtered = list.filter(t=>t.type==='expense');
     const tot = computeTotals(filtered);
-    summaryHtml = `<div class="summary-grid"><div class="stat balance" style="grid-column:span 2;"><div class="label">कुल खर्च</div><div class="val neg">${fmtMoney(tot.totalExpenseAmt)}</div></div></div>`;
+    const byCat = {};
+    filtered.forEach(t=>{
+      const cat = t.expenseCategory || 'अन्य खर्च';
+      byCat[cat] = (byCat[cat]||0) + (t.amount||0);
+    });
+    const catRows = Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>
+      `<div class="party-row"><span class="pname">${escapeHtml(cat)}</span><span class="neg">${fmtMoney(amt)}</span></div>`
+    ).join('');
+    summaryHtml = `<div class="summary-grid"><div class="stat balance" style="grid-column:span 2;"><div class="label">कुल खर्च</div><div class="val neg">${fmtMoney(tot.totalExpenseAmt)}</div></div></div>
+      <div style="margin-top:10px;padding:10px;background:#FBF3E1;border-radius:10px;">
+        <div style="font-size:13px;font-weight:700;color:var(--maroon-deep);margin-bottom:8px;">🏷️ श्रेणी-वार खर्च</div>
+        ${catRows || `<div class="empty">इस अवधि में कोई खर्च नहीं मिला</div>`}
+      </div>`;
     bodyHtml = filtered.length ? filtered.slice().sort((a,b)=>b.ts-a.ts).map(reportEntryRowHtml).join('') : `<div class="empty">इस अवधि में कोई खर्च नहीं मिला</div>`;
   } else if(type==='capital'){
     reportTitle = 'पूंजी निवेश/निकासी रिपोर्ट';
@@ -3282,7 +3363,7 @@ async function importData(event){
   }
 }
 
-const CASH_AFFECTING_TYPES = ['sale_cash','purchase_cash','expense','receive_due','pay_due','capital_invest','capital_withdraw','card_withdraw','card_payment'];
+const CASH_AFFECTING_TYPES = ['sale_cash','purchase_cash','expense','receive_due','pay_due','capital_invest','capital_withdraw','card_withdraw','card_payment','shop_transfer_give','shop_transfer_take'];
 function paymentModeOptionsHtml(type, selected){
   selected = selected || 'cash';
   let html = `<option value="cash" ${selected==='cash'?'selected':''}>कैश (नकद)</option>`;
@@ -3292,13 +3373,31 @@ function paymentModeOptionsHtml(type, selected){
   }
   return html;
 }
+function expenseCategoryOptionsHtml(selected){
+  selected = selected || EXPENSE_CATEGORIES[0];
+  return EXPENSE_CATEGORIES.map(c=>`<option value="${c}" ${c===selected?'selected':''}>${c}</option>`).join('');
+}
+function otherShop(){
+  return SHOPS.find(s=>s.id!==state.shop) || SHOPS[0];
+}
 function toggleFields(){
   const type = document.getElementById('f_type').value;
   const meta = TYPE_META[type];
-  document.getElementById('partyField').style.display = meta.needsParty ? 'block':'none';
+  const partyField = document.getElementById('partyField');
+  partyField.style.display = meta.needsParty ? 'block':'none';
   document.getElementById('costField').style.display = meta.needsCost ? 'block':'none';
   const stockPick = document.getElementById('stockPickField');
   if(stockPick) stockPick.style.display = meta.kind==='sale' ? 'block':'none';
+  const purchaseStockField = document.getElementById('purchaseStockField');
+  if(purchaseStockField) purchaseStockField.style.display = meta.kind==='purchase' ? 'block':'none';
+  if(meta.kind!=='purchase'){
+    const toggle = document.getElementById('f_add_stock_toggle');
+    if(toggle) toggle.checked = false;
+    const details = document.getElementById('purchaseStockDetails');
+    if(details) details.style.display = 'none';
+  }
+  const expenseCatField = document.getElementById('expenseCategoryField');
+  if(expenseCatField) expenseCatField.style.display = (type==='expense') ? 'block':'none';
   const paymentModeField = document.getElementById('paymentModeField');
   if(paymentModeField) paymentModeField.style.display = CASH_AFFECTING_TYPES.includes(type) ? 'block':'none';
   const pmSel = document.getElementById('f_payment_mode');
@@ -3306,16 +3405,50 @@ function toggleFields(){
     const cur = pmSel.value || 'cash';
     pmSel.innerHTML = paymentModeOptionsHtml(type, cur);
   }
+  const partyInput = document.getElementById('f_party');
+  const partyLabel = document.getElementById('f_party_label');
+  if(type==='shop_transfer_give'){
+    const os = otherShop();
+    if(partyInput){ partyInput.value = os.name; partyInput.readOnly = true; }
+    if(partyLabel) partyLabel.textContent = 'किस दुकान को पैसा दिया';
+  } else {
+    if(partyInput && partyInput.readOnly){ partyInput.value=''; partyInput.readOnly = false; }
+    if(partyLabel) partyLabel.textContent = 'नाम (ग्राहक/सप्लायर) — पहले से सेव नाम सुझाव में दिखेंगे';
+  }
   document.getElementById('f_amount_label').textContent = meta.kind==='sale' ? 'बिक्री मूल्य (₹)' : 'राशि (₹)';
 }
 function onStockPick(){
   const id = document.getElementById('f_stock_pick').value;
-  if(!id) return;
+  const imeiEl = document.getElementById('f_stock_sell_imei');
+  if(!id){ if(imeiEl) imeiEl.value=''; return; }
   const it = currentStock().find(s=>s.id===id);
   if(it){
     document.getElementById('f_cost').value = it.costPrice;
     if(it.sellPrice) document.getElementById('f_amount').value = it.sellPrice;
+    if(imeiEl) imeiEl.value = it.imei || '';
   }
+}
+function togglePurchaseStockFields(){
+  const checked = document.getElementById('f_add_stock_toggle').checked;
+  const details = document.getElementById('purchaseStockDetails');
+  if(details) details.style.display = checked ? 'block' : 'none';
+  if(checked) renderPurchaseImeiInputs();
+}
+function renderPurchaseImeiInputs(){
+  const wrap = document.getElementById('purchaseImeiInputsWrap');
+  if(!wrap) return;
+  let qty = parseInt(document.getElementById('f_stock_qty').value, 10);
+  if(isNaN(qty) || qty<1) qty = 1;
+  if(qty>50) qty = 50; // बहुत ज़्यादा एक साथ ना बने, इससे ज़्यादा हो तो अलग-अलग एंट्री करें
+  let html = '';
+  for(let i=1;i<=qty;i++){
+    html += `<label>IMEI / सीरियल नंबर — पीस ${i} (वैकल्पिक)</label>
+      <div style="display:flex;gap:8px;align-items:stretch;margin-bottom:10px;">
+        <input type="text" id="f_stock_imei_${i}" placeholder="IMEI ${i}" style="flex:1;">
+        <button type="button" class="btn-outline" onclick="openScanner('f_stock_imei_${i}')">📷 स्कैन</button>
+      </div>`;
+  }
+  wrap.innerHTML = html;
 }
 function bindDynamic(){
   if(state.section==='entry') toggleFields();
@@ -3349,11 +3482,17 @@ async function addTx(){
     const pmEl = document.getElementById('f_payment_mode');
     tx.paymentMode = pmEl ? pmEl.value : 'cash';
   }
+  if(type==='expense'){
+    const ecEl = document.getElementById('f_expense_category');
+    tx.expenseCategory = ecEl ? ecEl.value : EXPENSE_CATEGORIES[0];
+  }
 
   if(stockPickId){
     const stock = currentStock();
     const it = stock.find(s=>s.id===stockPickId);
     if(it){
+      const imeiEl = document.getElementById('f_stock_sell_imei');
+      if(imeiEl) it.imei = imeiEl.value.trim();
       tx.stockRestore = { id: it.id, name: it.name, company: it.company||'', costPrice: it.costPrice, sellPrice: it.sellPrice||null, phoneType: it.phoneType||'android', imei: it.imei||'', barcode: it.barcode||'', note: it.note||'', qtyUsed: 1 };
       it.qty -= 1;
       if(it.qty<=0){
@@ -3363,14 +3502,63 @@ async function addTx(){
     }
   }
 
+  // खरीद एंट्री के साथ स्टॉक भी जोड़ना है तो — हर पीस का अपना ID व IMEI बनेगा
+  if(meta.kind==='purchase'){
+    const addStockEl = document.getElementById('f_add_stock_toggle');
+    if(addStockEl && addStockEl.checked){
+      const sName = document.getElementById('f_stock_name').value.trim();
+      const sCompany = document.getElementById('f_stock_company').value.trim();
+      const sPhoneType = document.getElementById('f_stock_phoneType').value;
+      let sQty = parseInt(document.getElementById('f_stock_qty').value,10);
+      if(isNaN(sQty) || sQty<1) sQty = 1;
+      const sellRaw = document.getElementById('f_stock_sell_price').value;
+      const sellVal = parseFloat(sellRaw);
+      const sellPrice = (sellRaw==='' || isNaN(sellVal)) ? null : sellVal;
+      if(!sName){
+        alert('कृपया स्टॉक आइटम का नाम डालें (या "इस खरीद से स्टॉक भी जोड़ें" अनचेक करें)');
+        return;
+      }
+      const perUnitCost = amount / sQty;
+      const stock = currentStock();
+      const addedIds = [];
+      for(let i=1;i<=sQty;i++){
+        const imeiEl = document.getElementById('f_stock_imei_'+i);
+        const imei = imeiEl ? imeiEl.value.trim() : '';
+        const newId = uid();
+        stock.push({
+          id:newId, ts:Date.now(), name:sName, company:sCompany, costPrice:perUnitCost,
+          sellPrice, phoneType:sPhoneType, qty:1, imei, barcode:'', note:''
+        });
+        addedIds.push(newId);
+      }
+      tx.stockAddedIds = addedIds;
+    }
+  }
+
   currentTx().push(tx);
   await saveShop(state.shop);
+
+  // दूसरी दुकान को पैसा दिया → उस दुकान के खाते में अपने आप "दूसरी दुकान से पैसा लिया" वाली मिलती-जुलती एंट्री बन जाए
+  if(type==='shop_transfer_give'){
+    const os = otherShop();
+    const myName = SHOPS.find(s=>s.id===state.shop).name;
+    const mirrorTx = {
+      id: uid(), ts: Date.now(), type: 'shop_transfer_take', amount, cost: 0,
+      date, party: myName, note, paymentMode: tx.paymentMode, linkedTxId: tx.id
+    };
+    tx.linkedTxId = mirrorTx.id;
+    state.data[os.id].transactions.push(mirrorTx);
+    await saveShop(os.id);
+    await saveShop(state.shop); // linkedTxId अपडेट फिर से सेव करें
+  }
 
   state.date = date;
   document.getElementById('f_amount').value='';
   document.getElementById('f_cost').value='';
   document.getElementById('f_party').value='';
   document.getElementById('f_note').value='';
+  const addStockToggleEl = document.getElementById('f_add_stock_toggle');
+  if(addStockToggleEl) addStockToggleEl.checked = false;
   state.section='today';
   render();
 }
@@ -3398,8 +3586,25 @@ async function deleteTx(id){
   if(idx>-1){
     const tx = list[idx];
     if(tx.stockRestore) restoreStockFromTx(tx.stockRestore);
+    if(tx.stockAddedIds && tx.stockAddedIds.length){
+      const stock = currentStock();
+      tx.stockAddedIds.forEach(sid=>{
+        const sIdx = stock.findIndex(s=>s.id===sid);
+        if(sIdx>-1) stock.splice(sIdx,1); // अगर यह पीस अभी तक बिका नहीं है तो ही हटेगा
+      });
+    }
     list.splice(idx,1);
     await saveShop(state.shop);
+    // अगर यह "दूसरी दुकान" वाली लेन-देन एंट्री थी, तो दूसरी दुकान में बनी मिलती-जुलती एंट्री भी मिटाएं
+    if(tx.linkedTxId){
+      const os = otherShop();
+      const otherList = state.data[os.id].transactions;
+      const oIdx = otherList.findIndex(x=>x.id===tx.linkedTxId);
+      if(oIdx>-1){
+        otherList.splice(oIdx,1);
+        await saveShop(os.id);
+      }
+    }
     renderSection();
   }
 }
@@ -3417,14 +3622,20 @@ function editTxFormHtml(t){
   const typeOptions = Object.entries(TYPE_META).map(([key,meta])=>
     `<option value="${key}" ${t.type===key?'selected':''}>${meta.label}</option>`
   ).join('');
+  const isShopTransfer = (t.type==='shop_transfer_give' || t.type==='shop_transfer_take');
   return `
   <div class="card" id="editTxForm">
     <h2>✎ एंट्री एडिट करें</h2>
     <label>प्रकार</label>
-    <select id="et_type" onchange="toggleEditFields()">${typeOptions}</select>
+    <select id="et_type" onchange="toggleEditFields()" ${t.linkedTxId?'disabled':''}>${typeOptions}</select>
+    ${t.linkedTxId?'<div class="note">यह दूसरी दुकान से जुड़ी एंट्री है, इसलिए प्रकार नहीं बदल सकते — राशि/तारीख़/नोट बदलने पर दोनों दुकानों में अपडेट होगा।</div>':''}
     <div id="et_paymentModeField">
       <label>भुगतान माध्यम</label>
       <select id="et_payment_mode">${paymentModeOptionsHtml(t.type, t.paymentMode||'cash')}</select>
+    </div>
+    <div id="et_expenseCategoryField">
+      <label>खर्च की श्रेणी</label>
+      <select id="et_expense_category">${expenseCategoryOptionsHtml(t.expenseCategory)}</select>
     </div>
     <div class="row2">
       <div>
@@ -3440,7 +3651,7 @@ function editTxFormHtml(t){
     <input type="date" id="et_date" value="${t.date}">
     <div id="et_partyField">
       <label>नाम (ग्राहक/सप्लायर)</label>
-      <input type="text" id="et_party" list="et_partyDatalist" value="${t.party?escapeHtml(t.party):''}">
+      <input type="text" id="et_party" list="et_partyDatalist" value="${t.party?escapeHtml(t.party):''}" ${isShopTransfer?'readonly':''}>
       <datalist id="et_partyDatalist">${partyDatalistHtml()}</datalist>
     </div>
     <label>टिप्पणी (वैकल्पिक)</label>
@@ -3459,6 +3670,8 @@ function toggleEditFields(){
   if(partyField) partyField.style.display = meta.needsParty ? 'block' : 'none';
   if(costField) costField.style.display = meta.needsCost ? 'block' : 'none';
   if(paymentModeField) paymentModeField.style.display = CASH_AFFECTING_TYPES.includes(type) ? 'block' : 'none';
+  const expenseCatField = document.getElementById('et_expenseCategoryField');
+  if(expenseCatField) expenseCatField.style.display = (type==='expense') ? 'block':'none';
   const pmSel = document.getElementById('et_payment_mode');
   if(pmSel){
     const cur = pmSel.value || 'cash';
@@ -3503,8 +3716,28 @@ async function saveEditTx(id){
   } else {
     delete t.paymentMode;
   }
+  if(type==='expense'){
+    const ecEl = document.getElementById('et_expense_category');
+    t.expenseCategory = ecEl ? ecEl.value : EXPENSE_CATEGORIES[0];
+  } else {
+    delete t.expenseCategory;
+  }
 
   await saveShop(state.shop);
+
+  // दूसरी दुकान से जुड़ी एंट्री है तो वहाँ भी राशि/तारीख़/नोट/माध्यम अपडेट करें
+  if(t.linkedTxId){
+    const os = otherShop();
+    const mirror = state.data[os.id].transactions.find(x=>x.id===t.linkedTxId);
+    if(mirror){
+      mirror.amount = amount;
+      mirror.date = date;
+      mirror.note = note;
+      mirror.paymentMode = t.paymentMode;
+      await saveShop(os.id);
+    }
+  }
+
   closeEditTx();
   state.date = date;
   renderSection();
