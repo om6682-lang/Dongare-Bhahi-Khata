@@ -849,7 +849,7 @@ function sectionEntry(){
         <input type="checkbox" id="f_add_stock_toggle" onchange="togglePurchaseStockFields()"> इस खरीद से स्टॉक भी जोड़ें
       </label>
       <div id="purchaseStockDetails" style="display:none;">
-        <label>आइटम का नाम</label>
+        <label>आइटम का नाम (डिफ़ॉल्ट — मात्रा 1 से ज़्यादा हो तो नीचे हर पीस का नाम अलग भी भर सकते हैं)</label>
         <input type="text" id="f_stock_name" placeholder="जैसे: Samsung M14 / कुर्ता सेट">
         <label>कंपनी / ब्रांड (वैकल्पिक)</label>
         <input type="text" id="f_stock_company" list="companyList" placeholder="जैसे: Vivo">
@@ -3162,6 +3162,24 @@ function sectionCapital(){
       <span class="amt ${h.type==='capital_invest'?'pos':'neg'}">${h.type==='capital_invest'?'+':'-'}${fmtMoney(h.amount)}</span>
     </div>`).join('') : `<div class="empty">अभी कोई निवेश/निकासी नहीं हुई</div>`;
 
+  const capFrom = state.capitalStmtFrom || null;
+  const capTo = state.capitalStmtTo || null;
+  const periodHistory = (capFrom || capTo) ? history.filter(h=> (!capFrom || h.date>=capFrom) && (!capTo || h.date<=capTo) ) : history;
+  const periodInvest = periodHistory.filter(h=>h.type==='capital_invest').reduce((s,h)=>s+h.amount,0);
+  const periodWithdraw = periodHistory.filter(h=>h.type==='capital_withdraw').reduce((s,h)=>s+h.amount,0);
+  const capPeriodLabel = (capFrom || capTo) ? `${capFrom?fmtDate(capFrom):'शुरू से'} — ${capTo?fmtDate(capTo):'आज तक'}` : 'समस्त इतिहास (All Time)';
+  state.lastCapitalStatement = { history: periodHistory, periodInvest, periodWithdraw, periodLabel: capPeriodLabel, bothWord: multiShop ? shopsLabel : SHOPS[0].name };
+
+  const periodHistoryRows = periodHistory.length ? periodHistory.map(h=>`
+    <div class="entry">
+      <div>
+        <span class="type-tag ${h.type==='capital_invest'?'tag-purchase':'tag-pay_due'}">${h.type==='capital_invest'?'निवेश':'निकासी'}</span><br>
+        <span class="party">${h.shopName}</span>
+        <div class="note">${fmtDate(h.date)}${h.note?(' · '+escapeHtml(h.note)):''}</div>
+      </div>
+      <span class="amt ${h.type==='capital_invest'?'pos':'neg'}">${h.type==='capital_invest'?'+':'-'}${fmtMoney(h.amount)}</span>
+    </div>`).join('') : `<div class="empty">इस अवधि में कोई निवेश/निकासी नहीं हुई</div>`;
+
   const personalRows = personalExpenses.length ? personalExpenses.slice().sort((a,b)=>b.ts-a.ts).map(e=>`
     <div class="entry">
       <div>
@@ -3225,7 +3243,22 @@ function sectionCapital(){
   </div>
   <div class="card">
     <h2>निवेश/निकासी की हिस्ट्री</h2>
-    ${historyRows}
+    <p style="font-size:12px;color:var(--ink-soft);margin:0 0 8px;">दिनांक खाली छोड़ने पर पूरी हिस्ट्री (जैसे सामान्यतः दिखती है) दिखेगी — चाहें तो सिर्फ़ चुनी हुई अवधि की भी देख/PDF निकाल सकते हैं।</p>
+    <div class="row2">
+      <div><label>दिनांक से (वैकल्पिक)</label><input type="date" id="cap_stmt_from" value="${state.capitalStmtFrom||''}"></div>
+      <div><label>दिनांक तक (वैकल्पिक)</label><input type="date" id="cap_stmt_to" value="${state.capitalStmtTo||''}"></div>
+    </div>
+    <div class="row2" style="margin-top:8px;">
+      <button class="submit-btn" style="margin:0;" onclick="applyCapitalStatementRange()">लागू करें</button>
+      <button class="submit-btn btn-secondary" style="margin:0;" onclick="clearCapitalStatementRange()">रीसेट</button>
+    </div>
+    <div class="summary-grid" style="margin-top:14px;">
+      <div class="stat"><div class="label">इस अवधि निवेश</div><div class="val pos">${fmtMoney(periodInvest)}</div></div>
+      <div class="stat"><div class="label">इस अवधि निकासी</div><div class="val neg">${fmtMoney(periodWithdraw)}</div></div>
+    </div>
+    <button class="submit-btn" style="margin-top:12px;" onclick="generateCapitalStatementPdf()">📄 पूंजी स्टेटमेंट PDF बनाएं</button>
+    <div id="capitalStatementResult"></div>
+    <div style="margin-top:14px;">${periodHistoryRows}</div>
   </div>
   <div class="card">
     <h2>पूंजी खाते का पासवर्ड बदलें</h2>
@@ -3236,6 +3269,145 @@ function sectionCapital(){
     <button class="submit-btn" onclick="changeCapitalPin()">पासवर्ड बदलें ✓</button>
     <button class="submit-btn btn-secondary" style="margin-top:8px;" onclick="lockCapital()">🔒 पूंजी खाता लॉक करें</button>
   </div>`;
+}
+
+function applyCapitalStatementRange(){
+  const from = document.getElementById('cap_stmt_from').value;
+  const to = document.getElementById('cap_stmt_to').value;
+  if(from && to && from > to){ alert('"से" वाली दिनांक "तक" वाली दिनांक से बाद की नहीं हो सकती'); return; }
+  state.capitalStmtFrom = from || null;
+  state.capitalStmtTo = to || null;
+  renderSection();
+}
+function clearCapitalStatementRange(){
+  state.capitalStmtFrom = null;
+  state.capitalStmtTo = null;
+  renderSection();
+}
+
+async function buildCapitalStatementPdfBlob(data){
+  const shopName = SHOPS.length>1 ? OWNER_NAME : SHOPS[0].name;
+  const shopInfo = state.data[state.shop].shopInfo || {};
+  const shopAddress = shopInfo.address || '';
+  const logoSrc = (document.querySelector('header img') || {}).src || '';
+  const genDate = fmtDate(todayStr());
+
+  const rowsHtml = data.history.length ? data.history.map((h,idx)=>`
+    <tr>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;">${fmtDate(h.date)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;">${escapeHtml(h.shopName)}${h.note?('<br><span style="color:#999;font-size:11px;">'+escapeHtml(h.note)+'</span>'):''}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#145A32;font-weight:600;">${h.type==='capital_invest'?fmtMoney(h.amount):''}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#D9670C;font-weight:600;">${h.type==='capital_withdraw'?fmtMoney(h.amount):''}</td>
+    </tr>`).join('') : `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई एंट्री नहीं है</td></tr>`;
+
+  const container = document.createElement('div');
+  container.style.position='fixed';
+  container.style.left='-99999px';
+  container.style.top='0';
+  container.style.width='780px';
+  container.style.minHeight='1100px';
+  container.style.background='#fff';
+  container.style.fontFamily = "'Noto Sans Devanagari','Noto Sans',sans-serif";
+  container.innerHTML = `
+    <div style="border:2px solid #145A32;border-radius:10px;overflow:hidden;">
+      <div style="background:linear-gradient(135deg,#145A32,#0B3D24);padding:26px 34px;display:flex;align-items:center;gap:18px;">
+        ${logoSrc?`<img src="${logoSrc}" style="width:60px;height:60px;border-radius:12px;background:#fff;padding:3px;">`:''}
+        <div>
+          <div style="font-size:26px;font-weight:800;color:#fff;letter-spacing:0.5px;">${escapeHtml(shopName)}</div>
+          ${shopAddress?`<div style="font-size:12px;color:#FCE3C9;margin-top:3px;">${escapeHtml(shopAddress)}</div>`:''}
+          <div style="font-size:13px;color:#F5A25A;letter-spacing:1px;margin-top:4px;font-weight:700;">👑 CAPITAL STATEMENT / पूंजी निवेश-निकासी स्टेटमेंट</div>
+        </div>
+      </div>
+
+      <div style="padding:24px 34px 6px;display:flex;justify-content:space-between;font-size:13px;">
+        <div>
+          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">अवधि</div>
+          <div style="font-size:15px;font-weight:700;color:#145A32;">${escapeHtml(data.periodLabel)}</div>
+        </div>
+        <div style="text-align:right;">
+          <div><span style="color:#999;">बनाई गई दिनांक:</span> <b>${genDate}</b></div>
+          <div><span style="color:#999;">कुल एंट्री:</span> <b>${data.history.length}</b></div>
+        </div>
+      </div>
+
+      <div style="padding:16px 34px 0;">
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+          <thead>
+            <tr style="background:#FDEEDF;">
+              <th style="padding:10px;text-align:center;width:32px;color:#145A32;">S.No</th>
+              <th style="padding:10px;text-align:left;width:80px;color:#145A32;">दिनांक</th>
+              <th style="padding:10px;text-align:left;color:#145A32;">विवरण</th>
+              <th style="padding:10px;text-align:right;width:100px;color:#145A32;">निवेश (+)</th>
+              <th style="padding:10px;text-align:right;width:100px;color:#145A32;">निकासी (−)</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3" style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#0B3D24;border-top:2px solid #E8720C;">कुल (Total)</td>
+              <td style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#145A32;border-top:2px solid #E8720C;">${fmtMoney(data.periodInvest)}</td>
+              <td style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#D9670C;border-top:2px solid #E8720C;">${fmtMoney(data.periodWithdraw)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div style="margin:18px 34px 0;padding:14px 18px;border-radius:10px;background:#FDEEDF;display:flex;justify-content:space-between;align-items:center;">
+        <div style="font-size:14px;font-weight:700;color:#145A32;">शुद्ध (निवेश − निकासी)</div>
+        <div style="font-size:17px;font-weight:800;color:#145A32;">${fmtMoney(data.periodInvest - data.periodWithdraw)}</div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:30px 34px 20px;">
+        <div style="font-size:11.5px;color:#999;line-height:1.6;">यह कंप्यूटर जनित स्टेटमेंट है।</div>
+        <div style="text-align:center;">
+          <div style="border-top:1px solid #999;padding-top:6px;width:160px;font-size:11.5px;color:#666;">अधिकृत हस्ताक्षर</div>
+        </div>
+      </div>
+
+      <div style="background:#FDEEDF;text-align:center;padding:10px;font-size:11px;color:#145A32;font-weight:700;letter-spacing:0.5px;">
+        ⚡ Powered by Dongare Mobile Bhainsdehi
+      </div>
+    </div>
+  `;
+  document.body.appendChild(container);
+
+  const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff'});
+  document.body.removeChild(container);
+  const pdf = new window.jspdf.jsPDF({unit:'pt', format:'a4'});
+  addCanvasPagesToPdf(pdf, canvas, 24);
+  return pdf.output('blob');
+}
+
+async function generateCapitalStatementPdf(){
+  const data = state.lastCapitalStatement;
+  if(!data){ alert('पहले पूंजी खाता खोलें'); return; }
+  const resBox = document.getElementById('capitalStatementResult');
+  if(resBox) resBox.innerHTML = `<div class="empty" style="padding:14px 0;">स्टेटमेंट बन रहा है…</div>`;
+  try{
+    const pdfBlob = await buildCapitalStatementPdfBlob(data);
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+    const fname = 'Capital-Statement-'+todayStr()+'.pdf';
+    state.lastCapitalStatementPdf = { blob: pdfBlob, url: pdfUrl, fname };
+    if(resBox) resBox.innerHTML = `
+      <a href="${pdfUrl}" download="${fname}" class="submit-btn" style="display:block;text-decoration:none;text-align:center;box-sizing:border-box;margin-top:10px;">⬇️ PDF डाउनलोड करें</a>
+      <button class="submit-btn" style="margin-top:10px;" onclick="shareCapitalStatementPdf()">📤 PDF WhatsApp पर शेयर करें</button>`;
+  }catch(e){
+    if(resBox) resBox.innerHTML = `<div class="empty" style="padding:14px 0;">स्टेटमेंट PDF बनाने में दिक्कत हुई, कृपया दोबारा कोशिश करें।</div>`;
+  }
+}
+
+function shareCapitalStatementPdf(){
+  const st = state.lastCapitalStatementPdf;
+  if(!st){ alert('पहले स्टेटमेंट PDF बनाएं'); return; }
+  try{
+    const file = new File([st.blob], st.fname, {type:'application/pdf'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      navigator.share({ files:[file], title:'Capital Statement', text:'👑 पूंजी निवेश-निकासी स्टेटमेंट' }).catch(()=>{});
+      return;
+    }
+  }catch(e){}
+  alert('इस ब्राउज़र में सीधे PDF शेयर नहीं हो पा रहा। कृपया पहले "⬇️ PDF डाउनलोड करें" दबाएं, फिर WhatsApp खोलकर मैन्युअल रूप से भेज दें।');
 }
 
 function sectionCapitalGate(){
@@ -4153,14 +4325,31 @@ function renderPurchaseImeiInputs(){
   if(isNaN(qty) || qty<1) qty = 1;
   if(qty>50) qty = 50; // बहुत ज़्यादा एक साथ ना बने, इससे ज़्यादा हो तो अलग-अलग एंट्री करें
   let html = '';
-  for(let i=1;i<=qty;i++){
-    html += `<label>IMEI / सीरियल नंबर — पीस ${i} (वैकल्पिक)</label>
+  if(qty>1){
+    html += `<div style="font-size:12px;color:var(--ink-soft);margin:2px 0 10px;">मात्रा 1 से ज़्यादा है — हर पीस अलग मॉडल का हो सकता है, इसलिए हर पीस का नाम व IMEI अलग-अलग भरें (ऊपर वाला "आइटम का नाम" डिफ़ॉल्ट के तौर पर भर जाएगा, चाहें तो बदल दें)</div>`;
+    for(let i=1;i<=qty;i++){
+      html += `<div style="border:1px solid var(--paper-line);border-radius:10px;padding:10px;margin-bottom:10px;">
+        <div style="font-size:12.5px;font-weight:700;color:var(--maroon-deep);margin-bottom:6px;">पीस ${i}</div>
+        <label>मॉडल / आइटम का नाम — पीस ${i}</label>
+        <input type="text" id="f_stock_itemname_${i}" placeholder="जैसे: Samsung M14" oninput="syncPurchaseItemNamePlaceholder()">
+        <label>IMEI / सीरियल नंबर — पीस ${i} (वैकल्पिक)</label>
+        <div style="display:flex;gap:8px;align-items:stretch;">
+          <input type="text" id="f_stock_imei_${i}" placeholder="IMEI ${i}" style="flex:1;">
+          <button type="button" class="btn-outline" onclick="openScanner('f_stock_imei_${i}')">📷 स्कैन</button>
+        </div>
+      </div>`;
+    }
+  } else {
+    html += `<label>IMEI / सीरियल नंबर — पीस 1 (वैकल्पिक)</label>
       <div style="display:flex;gap:8px;align-items:stretch;margin-bottom:10px;">
-        <input type="text" id="f_stock_imei_${i}" placeholder="IMEI ${i}" style="flex:1;">
-        <button type="button" class="btn-outline" onclick="openScanner('f_stock_imei_${i}')">📷 स्कैन</button>
+        <input type="text" id="f_stock_imei_1" placeholder="IMEI 1" style="flex:1;">
+        <button type="button" class="btn-outline" onclick="openScanner('f_stock_imei_1')">📷 स्कैन</button>
       </div>`;
   }
   wrap.innerHTML = html;
+}
+function syncPurchaseItemNamePlaceholder(){
+  // सिर्फ़ यूज़र को याद दिलाने के लिए — कोई ज़रूरी लॉजिक नहीं, हर पीस का नाम अलग-अलग वाले फ़ील्ड से ही लिया जाएगा
 }
 function bindDynamic(){
   if(state.section==='entry') toggleFields();
@@ -4234,11 +4423,13 @@ async function addTx(){
       const stock = currentStock();
       const addedIds = [];
       for(let i=1;i<=sQty;i++){
+        const nameEl = document.getElementById('f_stock_itemname_'+i);
+        const perName = (nameEl && nameEl.value.trim()) ? nameEl.value.trim() : sName;
         const imeiEl = document.getElementById('f_stock_imei_'+i);
         const imei = imeiEl ? imeiEl.value.trim() : '';
         const newId = uid();
         stock.push({
-          id:newId, ts:Date.now(), name:sName, company:sCompany, costPrice:perUnitCost,
+          id:newId, ts:Date.now(), name:perName, company:sCompany, costPrice:perUnitCost,
           sellPrice, phoneType:sPhoneType, qty:1, imei, barcode:'', note:''
         });
         addedIds.push(newId);
