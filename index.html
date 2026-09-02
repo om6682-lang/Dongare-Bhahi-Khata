@@ -860,11 +860,9 @@ function sectionEntry(){
           <option value="keypad">☎️ कीपैड फोन</option>
           <option value="other">📦 अन्य / एक्सेसरी</option>
         </select>
-        <div class="row2">
-          <div><label>मात्रा (कितने पीस)</label><input type="number" id="f_stock_qty" min="1" value="1" oninput="renderPurchaseImeiInputs()"></div>
-          <div><label>सुझाई बिक्री मूल्य (वैकल्पिक)</label><input type="number" id="f_stock_sell_price" placeholder="0"></div>
-        </div>
-        <div style="font-size:12px;color:var(--ink-soft);margin:2px 0 8px;">ऊपर डाली गई कुल "राशि" ÷ मात्रा = हर पीस की लागत अपने-आप बन जाएगी</div>
+        <label>मात्रा (कितने पीस)</label>
+        <input type="number" id="f_stock_qty" min="1" value="1" oninput="renderPurchaseImeiInputs()">
+        <div style="font-size:12px;color:var(--ink-soft);margin:2px 0 8px;">हर पीस की खरीद कीमत और बिक्री कीमत नीचे अलग-अलग भरें — सबकी खरीद कीमत जोड़कर कुल "राशि" अपने आप बन जाएगी</div>
         <div id="purchaseImeiInputsWrap"></div>
       </div>
     </div>
@@ -876,6 +874,7 @@ function sectionEntry(){
       <div>
         <label id="f_amount_label">राशि (₹)</label>
         <input type="number" id="f_amount" placeholder="0" inputmode="decimal">
+        <div id="f_amount_auto_hint" style="display:none;font-size:12px;color:var(--ink-soft);margin-top:2px;">यह नीचे हर पीस की खरीद कीमत जोड़कर अपने आप बनी है</div>
       </div>
       <div id="costField">
         <label>खरीद मूल्य / लागत (₹)</label>
@@ -4316,7 +4315,16 @@ function togglePurchaseStockFields(){
   const checked = document.getElementById('f_add_stock_toggle').checked;
   const details = document.getElementById('purchaseStockDetails');
   if(details) details.style.display = checked ? 'block' : 'none';
-  if(checked) renderPurchaseImeiInputs();
+  const amountEl = document.getElementById('f_amount');
+  const hintEl = document.getElementById('f_amount_auto_hint');
+  if(checked){
+    renderPurchaseImeiInputs();
+    if(amountEl) amountEl.readOnly = true;
+    if(hintEl) hintEl.style.display = 'block';
+  } else {
+    if(amountEl) amountEl.readOnly = false;
+    if(hintEl) hintEl.style.display = 'none';
+  }
 }
 function renderPurchaseImeiInputs(){
   const wrap = document.getElementById('purchaseImeiInputsWrap');
@@ -4326,30 +4334,48 @@ function renderPurchaseImeiInputs(){
   if(qty>50) qty = 50; // बहुत ज़्यादा एक साथ ना बने, इससे ज़्यादा हो तो अलग-अलग एंट्री करें
   let html = '';
   if(qty>1){
-    html += `<div style="font-size:12px;color:var(--ink-soft);margin:2px 0 10px;">मात्रा 1 से ज़्यादा है — हर पीस अलग मॉडल का हो सकता है, इसलिए हर पीस का नाम व IMEI अलग-अलग भरें (ऊपर वाला "आइटम का नाम" डिफ़ॉल्ट के तौर पर भर जाएगा, चाहें तो बदल दें)</div>`;
-    for(let i=1;i<=qty;i++){
-      html += `<div style="border:1px solid var(--paper-line);border-radius:10px;padding:10px;margin-bottom:10px;">
-        <div style="font-size:12.5px;font-weight:700;color:var(--maroon-deep);margin-bottom:6px;">पीस ${i}</div>
-        <label>मॉडल / आइटम का नाम — पीस ${i}</label>
-        <input type="text" id="f_stock_itemname_${i}" placeholder="जैसे: Samsung M14" oninput="syncPurchaseItemNamePlaceholder()">
-        <label>IMEI / सीरियल नंबर — पीस ${i} (वैकल्पिक)</label>
-        <div style="display:flex;gap:8px;align-items:stretch;">
-          <input type="text" id="f_stock_imei_${i}" placeholder="IMEI ${i}" style="flex:1;">
-          <button type="button" class="btn-outline" onclick="openScanner('f_stock_imei_${i}')">📷 स्कैन</button>
-        </div>
-      </div>`;
-    }
-  } else {
-    html += `<label>IMEI / सीरियल नंबर — पीस 1 (वैकल्पिक)</label>
-      <div style="display:flex;gap:8px;align-items:stretch;margin-bottom:10px;">
-        <input type="text" id="f_stock_imei_1" placeholder="IMEI 1" style="flex:1;">
-        <button type="button" class="btn-outline" onclick="openScanner('f_stock_imei_1')">📷 स्कैन</button>
-      </div>`;
+    html += `<div style="font-size:12px;color:var(--ink-soft);margin:2px 0 10px;">मात्रा 1 से ज़्यादा है — हर पीस अलग मॉडल का हो सकता है, इसलिए हर पीस का नाम, खरीद कीमत, बिक्री कीमत व IMEI अलग-अलग भरें (ऊपर वाला "आइटम का नाम" डिफ़ॉल्ट के तौर पर भर जाएगा, चाहें तो बदल दें)</div>`;
   }
+  for(let i=1;i<=qty;i++){
+    html += `<div style="border:1px solid var(--paper-line);border-radius:10px;padding:10px;margin-bottom:10px;">
+      <div style="font-size:12.5px;font-weight:700;color:var(--maroon-deep);margin-bottom:6px;">पीस ${i}</div>
+      ${qty>1?`<label>मॉडल / आइटम का नाम — पीस ${i}</label>
+      <input type="text" id="f_stock_itemname_${i}" placeholder="जैसे: Samsung M14" oninput="syncPurchaseItemNamePlaceholder()">`:''}
+      <div class="row2">
+        <div><label>खरीद कीमत (₹) — पीस ${i}</label><input type="number" id="f_stock_cost_${i}" placeholder="0" inputmode="decimal" oninput="updatePurchaseTotal()"></div>
+        <div><label>बिक्री कीमत (₹) — पीस ${i} (वैकल्पिक)</label><input type="number" id="f_stock_sell_${i}" placeholder="0" inputmode="decimal"></div>
+      </div>
+      <label>IMEI / सीरियल नंबर — पीस ${i} (वैकल्पिक)</label>
+      <div style="display:flex;gap:8px;align-items:stretch;">
+        <input type="text" id="f_stock_imei_${i}" placeholder="IMEI ${i}" style="flex:1;">
+        <button type="button" class="btn-outline" onclick="openScanner('f_stock_imei_${i}')">📷 स्कैन</button>
+      </div>
+    </div>`;
+  }
+  html += `<div id="purchaseTotalLine" style="font-size:14px;font-weight:700;color:#145A32;border-top:2px solid #E8720C;padding-top:8px;margin-top:4px;display:flex;justify-content:space-between;">
+    <span>कुल खरीद राशि (सभी ${qty} पीस)</span><span id="purchaseTotalVal">₹0</span>
+  </div>`;
   wrap.innerHTML = html;
+  updatePurchaseTotal();
 }
 function syncPurchaseItemNamePlaceholder(){
   // सिर्फ़ यूज़र को याद दिलाने के लिए — कोई ज़रूरी लॉजिक नहीं, हर पीस का नाम अलग-अलग वाले फ़ील्ड से ही लिया जाएगा
+}
+function updatePurchaseTotal(){
+  let qty = parseInt(document.getElementById('f_stock_qty').value, 10);
+  if(isNaN(qty) || qty<1) qty = 1;
+  if(qty>50) qty = 50;
+  let total = 0;
+  for(let i=1;i<=qty;i++){
+    const el = document.getElementById('f_stock_cost_'+i);
+    const v = el ? parseFloat(el.value) : NaN;
+    if(!isNaN(v) && v>0) total += v;
+  }
+  const totalValEl = document.getElementById('purchaseTotalVal');
+  if(totalValEl) totalValEl.textContent = fmtMoney(total);
+  const amountEl = document.getElementById('f_amount');
+  const addStockEl = document.getElementById('f_add_stock_toggle');
+  if(amountEl && addStockEl && addStockEl.checked) amountEl.value = total || '';
 }
 function bindDynamic(){
   if(state.section==='entry') toggleFields();
@@ -4361,7 +4387,7 @@ function escapeHtml(s){
 
 async function addTx(){
   const type = document.getElementById('f_type').value;
-  const amount = parseFloat(document.getElementById('f_amount').value);
+  let amount = parseFloat(document.getElementById('f_amount').value);
   const costRaw = document.getElementById('f_cost').value;
   const date = document.getElementById('f_date').value || state.date;
   const party = document.getElementById('f_party').value.trim();
@@ -4369,6 +4395,28 @@ async function addTx(){
   const meta = TYPE_META[type];
   const stockPickEl = document.getElementById('f_stock_pick');
   const stockPickId = (meta.kind==='sale' && stockPickEl) ? stockPickEl.value : '';
+
+  // खरीद के साथ स्टॉक जोड़ना हो तो हर पीस की अपनी खरीद कीमत से कुल राशि बनेगी
+  const addStockEl = (meta.kind==='purchase') ? document.getElementById('f_add_stock_toggle') : null;
+  const addingStock = !!(addStockEl && addStockEl.checked);
+  let sQty = 1, perPieceCosts = [], perPieceSells = [];
+  if(addingStock){
+    sQty = parseInt(document.getElementById('f_stock_qty').value,10);
+    if(isNaN(sQty) || sQty<1) sQty = 1;
+    if(sQty>50) sQty = 50;
+    let total = 0;
+    for(let i=1;i<=sQty;i++){
+      const costEl = document.getElementById('f_stock_cost_'+i);
+      const cVal = costEl ? parseFloat(costEl.value) : NaN;
+      if(isNaN(cVal) || cVal<0){ alert('कृपया पीस '+i+' की खरीद कीमत डालें (मुफ़्त हो तो 0 डालें)'); return; }
+      perPieceCosts.push(cVal);
+      total += cVal;
+      const sellEl = document.getElementById('f_stock_sell_'+i);
+      const sVal = sellEl ? parseFloat(sellEl.value) : NaN;
+      perPieceSells.push((sellEl && sellEl.value!=='' && !isNaN(sVal)) ? sVal : null);
+    }
+    amount = total;
+  }
 
   if(!amount || amount<=0){ alert('कृपया सही राशि डालें'); return; }
   if(meta.needsParty && !party){ alert('कृपया नाम डालें'); return; }
@@ -4403,39 +4451,30 @@ async function addTx(){
     }
   }
 
-  // खरीद एंट्री के साथ स्टॉक भी जोड़ना है तो — हर पीस का अपना ID व IMEI बनेगा
-  if(meta.kind==='purchase'){
-    const addStockEl = document.getElementById('f_add_stock_toggle');
-    if(addStockEl && addStockEl.checked){
-      const sName = document.getElementById('f_stock_name').value.trim();
-      const sCompany = document.getElementById('f_stock_company').value.trim();
-      const sPhoneType = document.getElementById('f_stock_phoneType').value;
-      let sQty = parseInt(document.getElementById('f_stock_qty').value,10);
-      if(isNaN(sQty) || sQty<1) sQty = 1;
-      const sellRaw = document.getElementById('f_stock_sell_price').value;
-      const sellVal = parseFloat(sellRaw);
-      const sellPrice = (sellRaw==='' || isNaN(sellVal)) ? null : sellVal;
-      if(!sName){
-        alert('कृपया स्टॉक आइटम का नाम डालें (या "इस खरीद से स्टॉक भी जोड़ें" अनचेक करें)');
-        return;
-      }
-      const perUnitCost = amount / sQty;
-      const stock = currentStock();
-      const addedIds = [];
-      for(let i=1;i<=sQty;i++){
-        const nameEl = document.getElementById('f_stock_itemname_'+i);
-        const perName = (nameEl && nameEl.value.trim()) ? nameEl.value.trim() : sName;
-        const imeiEl = document.getElementById('f_stock_imei_'+i);
-        const imei = imeiEl ? imeiEl.value.trim() : '';
-        const newId = uid();
-        stock.push({
-          id:newId, ts:Date.now(), name:perName, company:sCompany, costPrice:perUnitCost,
-          sellPrice, phoneType:sPhoneType, qty:1, imei, barcode:'', note:''
-        });
-        addedIds.push(newId);
-      }
-      tx.stockAddedIds = addedIds;
+  // खरीद एंट्री के साथ स्टॉक भी जोड़ना है तो — हर पीस का अपना ID, खरीद कीमत, बिक्री कीमत व IMEI बनेगा
+  if(meta.kind==='purchase' && addingStock){
+    const sName = document.getElementById('f_stock_name').value.trim();
+    const sCompany = document.getElementById('f_stock_company').value.trim();
+    const sPhoneType = document.getElementById('f_stock_phoneType').value;
+    if(!sName){
+      alert('कृपया स्टॉक आइटम का नाम डालें (या "इस खरीद से स्टॉक भी जोड़ें" अनचेक करें)');
+      return;
     }
+    const stock = currentStock();
+    const addedIds = [];
+    for(let i=1;i<=sQty;i++){
+      const nameEl = document.getElementById('f_stock_itemname_'+i);
+      const perName = (nameEl && nameEl.value.trim()) ? nameEl.value.trim() : sName;
+      const imeiEl = document.getElementById('f_stock_imei_'+i);
+      const imei = imeiEl ? imeiEl.value.trim() : '';
+      const newId = uid();
+      stock.push({
+        id:newId, ts:Date.now(), name:perName, company:sCompany, costPrice:perPieceCosts[i-1],
+        sellPrice:perPieceSells[i-1], phoneType:sPhoneType, qty:1, imei, barcode:'', note:''
+      });
+      addedIds.push(newId);
+    }
+    tx.stockAddedIds = addedIds;
   }
 
   currentTx().push(tx);
