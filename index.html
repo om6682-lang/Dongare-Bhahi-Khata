@@ -2762,38 +2762,59 @@ function generateComparison(kind){
 // ---------- बैलेंस शीट (Assets = Liabilities + Capital) ----------
 
 
-function getBalanceStockValue(shopId, asOfDate){
+function getBalanceAssetBreakdown(shopId, asOfDate){
   const d = state.data[shopId];
   const shopInfo = d.shopInfo || {};
   const baseDate = shopInfo.manualStockValueDate || '';
-  let value = (!asOfDate || !baseDate || baseDate <= asOfDate) ? (Number(shopInfo.manualStockValue)||0) : 0;
+  let untracked = (!asOfDate || !baseDate || baseDate <= asOfDate) ? (Number(shopInfo.manualStockValue)||0) : 0;
 
-  if(!asOfDate){
-    return value + d.stock.reduce((s,it)=>s+(Number(it.costPrice)||0)*(Number(it.qty)||0),0);
-  }
-
-  // Historical stock: start with manual base and add untracked stock movements.
-  const txs = d.transactions.filter(t=>t.date<=asOfDate);
+  // 1) बिना स्टॉक लिंक वाली खरीद = अलग "बिना स्टॉक वाली खरीद/माल" Asset
+  //    यह Cash/Bank घटने या Creditor बढ़ने के सामने asset बनेगा।
+  const txs = asOfDate ? d.transactions.filter(t=>t.date<=asOfDate) : d.transactions;
   txs.forEach(t=>{
-    if((t.type==='purchase_cash'||t.type==='purchase_credit') && !t.stockLinked) value += Number(t.amount)||0;
-    else if((t.type==='sale_cash'||t.type==='sale_credit') && !t.stockRestore) value -= Number(t.cost)||0;
-  });
-
-  // For item-wise stock, calculate from stock additions known to the ledger.
-  const added = {};
-  txs.forEach(t=>{
-    if(Array.isArray(t.stockAddedIds)){
-      t.stockAddedIds.forEach(id=>{
-        if(t.type==='purchase_cash'||t.type==='purchase_credit'||t.type==='capital_invest_stock') added[id]=true;
-      });
+    if((t.type==='purchase_cash'||t.type==='purchase_credit') && !t.stockLinked){
+      untracked += Number(t.amount)||0;
+    } else if((t.type==='sale_cash'||t.type==='sale_credit') && !t.stockRestore){
+      // बिना stock-link वाली बिक्री में दी गई लागत को untracked asset से घटाएं।
+      untracked -= Number(t.cost)||0;
     }
   });
-  // Only currently remaining tracked units are assets. Sold units are not
-  // present in d.stock, so they naturally disappear from this calculation.
+
+  // 2) आइटम-wise Stock = अलग "स्टॉक (लागत मूल्य)" Asset
+  //    आज की स्थिति में current stock array ही authoritative है।
   let tracked = 0;
-  d.stock.forEach(it=>{ if(added[it.id]) tracked += (Number(it.costPrice)||0)*(Number(it.qty)||0); });
-  return value + tracked;
+  if(!asOfDate){
+    tracked = d.stock.reduce((sum,it)=>sum+(Number(it.costPrice)||0)*(Number(it.qty)||0),0);
+  } else {
+    // पुराने as-of के लिए additions और stock-linked sales का reconstruction।
+    const additions = {};
+    txs.forEach(t=>{
+      if(Array.isArray(t.stockAddedIds) &&
+         (t.type==='purchase_cash'||t.type==='purchase_credit'||t.type==='capital_invest_stock')){
+        t.stockAddedIds.forEach(id=>{ additions[id]=true; });
+      }
+    });
+    // Current stock में मौजूद item का cost; sold item की लागत sale transaction में stockRestore में मिलती है।
+    d.stock.forEach(it=>{
+      if(additions[it.id]) tracked += (Number(it.costPrice)||0)*(Number(it.qty)||0);
+    });
+    txs.forEach(t=>{
+      if((t.type==='sale_cash'||t.type==='sale_credit') && t.stockRestore){
+        // इस sale के समय stock घटा था, इसलिए as-of के पहले sale को tracked stock से घटाएं।
+        tracked -= (Number(t.stockRestore.costPrice)||0) * (Number(t.stockRestore.qtyUsed)||1);
+      }
+    });
+    if(tracked < 0 && Math.abs(tracked)<1) tracked=0;
+  }
+
+  return {trackedStock: tracked, untrackedPurchase: untracked, total: tracked + untracked};
 }
+
+// पुराने नाम को अन्य रिपोर्ट/कोड के लिए सुरक्षित रखते हुए कुल Asset value लौटाएं।
+function getBalanceStockValue(shopId, asOfDate){
+  return getBalanceAssetBreakdown(shopId, asOfDate).total;
+}
+
 function sectionBalanceSheet(){
   const asOf = state.bsAsOfDate || null;
   const perShop = SHOPS.map(s=>({
@@ -2814,9 +2835,10 @@ function sectionBalanceSheet(){
   // stock is reconstructed from transactions instead of blindly using
   // today's physical stock, so a new purchase cannot create a false
   // balance-sheet difference.
-  const stockValueForShop = p => getBalanceStockValue(p.id, asOf);
-
-  const totalStockValue = perShop.reduce((s,p)=>s+stockValueForShop(p),0);
+  const assetBreakdownForShop = p => getBalanceAssetBreakdown(p.id, asOf);
+  const totalTrackedStock = perShop.reduce((s,p)=>s+assetBreakdownForShop(p).trackedStock,0);
+  const totalUntrackedPurchase = perShop.reduce((s,p)=>s+assetBreakdownForShop(p).untrackedPurchase,0);
+  const totalStockValue = totalTrackedStock + totalUntrackedPurchase;
 
   const totalDebtors = perShop.reduce((s,p)=>
     s+Object.values(p.cum.debtors||{}).filter(v=>v>0.5).reduce((a,b)=>a+b,0),0);
@@ -2857,7 +2879,8 @@ function sectionBalanceSheet(){
     <h2>संपत्ति (Assets)</h2>
     <div class="party-row"><span class="pname">नकद (Cash in Hand)</span><span class="pos">${fmtMoney(totalCash)}</span></div>
     <div class="party-row"><span class="pname">🏦 बैंक बैलेंस</span><span class="pos">${fmtMoney(totalBank)}</span></div>
-    <div class="party-row"><span class="pname">📦 स्टॉक (लागत मूल्य पर)</span><span class="pos">${fmtMoney(totalStockValue)}</span></div>
+    <div class="party-row"><span class="pname">📦 स्टॉक (लागत मूल्य पर)</span><span class="pos">${fmtMoney(totalTrackedStock)}</span></div>
+    <div class="party-row"><span class="pname">📦 बिना स्टॉक वाली खरीद (Asset)</span><span class="pos">${fmtMoney(totalUntrackedPurchase)}</span></div>
     <div class="party-row"><span class="pname">सुंदरी देनदार (Sundry Debtors)</span><span class="pos">${fmtMoney(totalDebtors)}</span></div>
     <div class="total-line"><span>कुल संपत्ति (Total Assets)</span><span class="pos" style="font-size:18px;">${fmtMoney(totalAssets)}</span></div>
   </div>
@@ -2940,8 +2963,9 @@ function sectionTrialBalance(){
     const tag = multiShop ? ` — ${p.name}` : '';
     if(Math.abs(p.cum.cash) > 0.5){ rows.push({label:'नकद (Cash in Hand)'+tag, dr:p.cum.cash>0?p.cum.cash:0, cr:p.cum.cash<0?-p.cum.cash:0}); }
     if(Math.abs(p.cum.bank) > 0.5){ rows.push({label:'🏦 बैंक बैलेंस'+tag, dr:p.cum.bank>0?p.cum.bank:0, cr:p.cum.bank<0?-p.cum.bank:0}); }
-    const stockVal = getBalanceStockValue(p.id, asOf);
-    if(Math.abs(stockVal) > 0.5){ rows.push({label:'📦 स्टॉक (वर्तमान लागत मूल्य पर)'+tag, dr:stockVal, cr:0}); }
+    const assetBreak = getBalanceAssetBreakdown(p.id, asOf);
+    if(Math.abs(assetBreak.trackedStock) > 0.5){ rows.push({label:'📦 स्टॉक (वर्तमान लागत मूल्य पर)'+tag, dr:assetBreak.trackedStock, cr:0}); }
+    if(Math.abs(assetBreak.untrackedPurchase) > 0.5){ rows.push({label:'📦 बिना स्टॉक वाली खरीद (Asset)'+tag, dr:assetBreak.untrackedPurchase, cr:0}); }
     Object.entries(p.cum.debtors).forEach(([name,amt])=>{
       if(amt > 0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:amt, cr:0});
       else if(amt < -0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:0, cr:-amt});
