@@ -2761,29 +2761,68 @@ function generateComparison(kind){
 
 // ---------- बैलेंस शीट (Assets = Liabilities + Capital) ----------
 
+
+function getBalanceStockValue(shopId, asOfDate){
+  const d = state.data[shopId];
+  const shopInfo = d.shopInfo || {};
+  const baseDate = shopInfo.manualStockValueDate || '';
+  let value = (!asOfDate || !baseDate || baseDate <= asOfDate) ? (Number(shopInfo.manualStockValue)||0) : 0;
+
+  if(!asOfDate){
+    return value + d.stock.reduce((s,it)=>s+(Number(it.costPrice)||0)*(Number(it.qty)||0),0);
+  }
+
+  // Historical stock: start with manual base and add untracked stock movements.
+  const txs = d.transactions.filter(t=>t.date<=asOfDate);
+  txs.forEach(t=>{
+    if((t.type==='purchase_cash'||t.type==='purchase_credit') && !t.stockLinked) value += Number(t.amount)||0;
+    else if((t.type==='sale_cash'||t.type==='sale_credit') && !t.stockRestore) value -= Number(t.cost)||0;
+  });
+
+  // For item-wise stock, calculate from stock additions known to the ledger.
+  const added = {};
+  txs.forEach(t=>{
+    if(Array.isArray(t.stockAddedIds)){
+      t.stockAddedIds.forEach(id=>{
+        if(t.type==='purchase_cash'||t.type==='purchase_credit'||t.type==='capital_invest_stock') added[id]=true;
+      });
+    }
+  });
+  // Only currently remaining tracked units are assets. Sold units are not
+  // present in d.stock, so they naturally disappear from this calculation.
+  let tracked = 0;
+  d.stock.forEach(it=>{ if(added[it.id]) tracked += (Number(it.costPrice)||0)*(Number(it.qty)||0); });
+  return value + tracked;
+}
 function sectionBalanceSheet(){
   const asOf = state.bsAsOfDate || null;
   const perShop = SHOPS.map(s=>({
-    id: s.id, name: s.name,
-    cum: computeCumulative(s.id, asOf),
-    stock: state.data[s.id].stock
+    id:s.id, name:s.name,
+    cum:computeCumulative(s.id, asOf),
+    stock:state.data[s.id].stock
   }));
   const multiShop = SHOPS.length > 1;
   const bothWord = multiShop ? 'सभी दुकानों' : SHOPS[0].name;
+  const asOfLabel = asOf ? fmtDate(asOf) : 'आज';
 
   const totalCash = perShop.reduce((s,p)=>s+p.cum.cash,0);
   const totalBank = perShop.reduce((s,p)=>s+p.cum.bank,0);
   const totalCard = perShop.reduce((s,p)=>s+p.cum.card,0);
-  const totalStockValue = perShop.reduce((s,p)=>s+p.stock.reduce((ss,it)=>ss+((it.costPrice||0)*(it.qty||0)),0),0)
-    + perShop.reduce((s,p)=>s+computeManualStockValue(p.id),0);
-  const totalDebtors = perShop.reduce((s,p)=>{
-    const d = Object.values(p.cum.debtors).filter(v=>v>0.5).reduce((a,b)=>a+b,0);
-    return s+d;
-  },0);
-  const totalCreditors = perShop.reduce((s,p)=>{
-    const c = Object.values(p.cum.creditors).filter(v=>v>0.5).reduce((a,b)=>a+b,0);
-    return s+c;
-  },0);
+
+  // IMPORTANT:
+  // Actual item-wise stock + manual/untracked stock. For an as-of report,
+  // stock is reconstructed from transactions instead of blindly using
+  // today's physical stock, so a new purchase cannot create a false
+  // balance-sheet difference.
+  const stockValueForShop = p => getBalanceStockValue(p.id, asOf);
+
+  const totalStockValue = perShop.reduce((s,p)=>s+stockValueForShop(p),0);
+
+  const totalDebtors = perShop.reduce((s,p)=>
+    s+Object.values(p.cum.debtors||{}).filter(v=>v>0.5).reduce((a,b)=>a+b,0),0);
+
+  const totalCreditors = perShop.reduce((s,p)=>
+    s+Object.values(p.cum.creditors||{}).filter(v=>v>0.5).reduce((a,b)=>a+b,0),0);
 
   const totalProfit = perShop.reduce((s,p)=>s+p.cum.profit,0);
   const totalInvest = perShop.reduce((s,p)=>s+(p.cum.totalCapitalInvest||0),0);
@@ -2793,15 +2832,19 @@ function sectionBalanceSheet(){
   const totalAssets = totalCash + totalBank + totalStockValue + totalDebtors;
   const totalLiabCapital = totalCreditors + totalCard + netCapital;
   const difference = totalAssets - totalLiabCapital;
-  const isBalanced = Math.abs(difference) < 1;
+  const isBalanced = Math.abs(difference)<1;
 
-  const asOfLabel = asOf ? fmtDate(asOf) : 'आज';
-  state.lastBalanceSheetText = buildBalanceSheetShareText(bothWord, asOfLabel, totalCash, totalBank, totalStockValue, totalDebtors, totalCreditors, totalCard, netCapital, totalAssets, totalLiabCapital, difference);
+  state.lastBalanceSheetText = buildBalanceSheetShareText(
+    bothWord,asOfLabel,totalCash,totalBank,totalStockValue,totalDebtors,
+    totalCreditors,totalCard,netCapital,totalAssets,totalLiabCapital,difference
+  );
 
   return `
   <div class="card">
     <h2>⚖️ बैलेंस शीट</h2>
-    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">${asOfLabel} तक की कुल संपत्ति (Assets) बनाम देयताएं + पूंजी (Liabilities + Capital) — ${bothWord} मिलाकर।</p>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">
+      ${asOfLabel} तक की कुल संपत्ति (Assets) बनाम देयताएं + पूंजी (Liabilities + Capital) — ${bothWord} मिलाकर।
+    </p>
     <div class="row2">
       <div><label>तारीख तक (खाली छोड़ें = आज तक)</label><input type="date" id="bs_asof" value="${state.bsAsOfDate||''}"></div>
       <div style="display:flex;align-items:flex-end;gap:8px;">
@@ -2809,7 +2852,6 @@ function sectionBalanceSheet(){
         <button class="submit-btn btn-secondary" style="margin:0;" onclick="clearBalanceSheetAsOf()">रीसेट</button>
       </div>
     </div>
-    ${asOf ? `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">नोट: स्टॉक की राशि हमेशा वर्तमान मूल्य दिखाती है (पुरानी तारीख के लिए ऐतिहासिक स्टॉक ट्रैक नहीं होता)।</p>` : ''}
   </div>
   <div class="card">
     <h2>संपत्ति (Assets)</h2>
@@ -2823,18 +2865,17 @@ function sectionBalanceSheet(){
     <h2>देयताएं + पूंजी (Liabilities + Capital)</h2>
     <div class="party-row"><span class="pname">सुंदरी लेनदार (Sundry Creditors)</span><span class="neg">${fmtMoney(totalCreditors)}</span></div>
     <div class="party-row"><span class="pname">💳 क्रेडिट कार्ड बकाया</span><span class="neg">${fmtMoney(totalCard)}</span></div>
-    <div class="party-row"><span class="pname">👑 मालिक की पूंजी (Owner's Capital)</span><span class="${netCapital>=0?'pos':'neg'}">${fmtMoney(netCapital)}</span></div>
+    <div class="party-row"><span class="pname">👑 मालिक की पूंजी (Owner's Capital)</span><span="${netCapital>=0?'pos':'neg'}">${fmtMoney(netCapital)}</span></div>
     <div class="total-line"><span>कुल देयताएं + पूंजी</span><span style="font-size:18px;">${fmtMoney(totalLiabCapital)}</span></div>
   </div>
   <div class="card">
-    <h2>${isBalanced ? '✅ बैलेंस मिल गया' : '⚠️ थोड़ा अंतर है'}</h2>
+    <h2>${isBalanced?'✅ बैलेंस मिल गया':'⚠️ थोड़ा अंतर है'}</h2>
     <div class="stat balance"><div class="label">Assets − (Liabilities + Capital)</div><div class="val ${isBalanced?'pos':'neg'}">${fmtMoney(difference)}</div></div>
-    ${!isBalanced ? `<p style="font-size:12px;color:var(--ink-soft);margin-top:8px;">छोटा अंतर आना सामान्य है — जैसे अगर कोई बिक्री एंट्री स्टॉक से लिंक किए बिना डाली गई हो (तो स्टॉक अपने-आप नहीं घटा)। बड़ा अंतर दिखे तो एंट्रियाँ एक बार दोबारा जांच लें।</p>` : ''}
+    ${!isBalanced?`<p style="font-size:12px;color:var(--ink-soft);margin-top:8px;">यदि अंतर किसी नई खरीद की राशि के बराबर है, तो उस खरीद में स्टॉक जोड़ते समय भुगतान स्रोत (कैश/क्रेडिट/पूंजी) की एंट्री भी बनी होनी चाहिए।</p>`:''}
   </div>
-  <div class="card">
-    <button class="submit-btn" onclick="shareBalanceSheet()">📤 WhatsApp पर भेजें</button>
-  </div>`;
+  <div class="card"><button class="submit-btn" onclick="shareBalanceSheet()">📤 WhatsApp पर भेजें</button></div>`;
 }
+
 
 function applyBalanceSheetAsOf(){
   const v = document.getElementById('bs_asof').value;
@@ -2899,7 +2940,7 @@ function sectionTrialBalance(){
     const tag = multiShop ? ` — ${p.name}` : '';
     if(Math.abs(p.cum.cash) > 0.5){ rows.push({label:'नकद (Cash in Hand)'+tag, dr:p.cum.cash>0?p.cum.cash:0, cr:p.cum.cash<0?-p.cum.cash:0}); }
     if(Math.abs(p.cum.bank) > 0.5){ rows.push({label:'🏦 बैंक बैलेंस'+tag, dr:p.cum.bank>0?p.cum.bank:0, cr:p.cum.bank<0?-p.cum.bank:0}); }
-    const stockVal = p.stock.reduce((s,it)=>s+((it.costPrice||0)*(it.qty||0)),0) + computeManualStockValue(p.id);
+    const stockVal = getBalanceStockValue(p.id, asOf);
     if(Math.abs(stockVal) > 0.5){ rows.push({label:'📦 स्टॉक (वर्तमान लागत मूल्य पर)'+tag, dr:stockVal, cr:0}); }
     Object.entries(p.cum.debtors).forEach(([name,amt])=>{
       if(amt > 0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:amt, cr:0});
@@ -3742,6 +3783,24 @@ function closeStockForm(){
   const wrap = document.getElementById('stockFormWrap');
   if(wrap) wrap.innerHTML='';
 }
+
+function validatePurchaseStockSource(){
+  const sourceEl = document.getElementById('s_source');
+  const source = sourceEl ? sourceEl.value : 'none';
+  if(source==='none'){
+    alert('⚠️ स्टॉक खरीद के लिए भुगतान स्रोत चुनना जरूरी है।\n\nकैश = नकद कम होगा\nक्रेडिट = लेनदार बढ़ेगा\nपूंजी = मालिक की पूंजी बढ़ेगी\n\nइससे Trial Balance और Balance Sheet में अंतर नहीं आएगा।');
+    return false;
+  }
+  if(source==='credit'){
+    const partyEl = document.getElementById('s_source_party');
+    if(!partyEl || !partyEl.value.trim()){
+      alert('कृपया सप्लायर/लेनदार का नाम डालें।');
+      return false;
+    }
+  }
+  return true;
+}
+
 async function saveStock(){
   const name = document.getElementById('s_name').value.trim();
   const company = document.getElementById('s_company').value.trim();
@@ -3770,6 +3829,7 @@ async function saveStock(){
       if(!sourceParty){ alert('कृपया सप्लायर/लेनदार का नाम डालें'); return; }
     }
     sourceInfo = {source, sourceParty};
+    if(!validatePurchaseStockSource()) return;
   }
 
   if(state.editingStockId){
