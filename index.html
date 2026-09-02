@@ -601,10 +601,11 @@ function computeTotals(list){
   return {cash, bank, card, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
 }
 
-function computeCumulative(shopId){
+function computeCumulative(shopId, asOfDate){
   shopId = shopId || state.shop;
   const opening = state.data[shopId].opening || {cash:0, bank:0, card:0, profit:0, parties:{}};
-  const base = computeTotals(state.data[shopId].transactions);
+  const txList = asOfDate ? state.data[shopId].transactions.filter(t=>t.date<=asOfDate) : state.data[shopId].transactions;
+  const base = computeTotals(txList);
   const debtors = Object.assign({}, base.debtors);
   const creditors = Object.assign({}, base.creditors);
   Object.entries(opening.parties||{}).forEach(([name, info])=>{
@@ -1318,6 +1319,23 @@ function partyLedgerEntries(name){
   return entries.map(e=>{ running += e.signed; return Object.assign({}, e, {running}); });
 }
 
+// किसी भी अवधि (from/to) की पार्टी लेजर स्टेटमेंट — दोनों खाली हों तो पूरा इतिहास (सामान्य व्यवहार) जैसा ही
+function partyLedgerRangeData(name, from, to){
+  const all = partyLedgerEntries(name).map(e=>({ ts:e.ts, date:e.date, label:e.label, signed:e.signed, note:e.note }));
+  let opening = 0;
+  const rows = [];
+  all.forEach(e=>{
+    const d = e.date; // '—' यानी शुरूआती (opening) बैलेंस एंट्री
+    const isOpeningEntry = (d==='—');
+    if(from && (isOpeningEntry || d < from)){ opening += e.signed; return; }
+    if(to && !isOpeningEntry && d > to){ return; }
+    rows.push(e);
+  });
+  let running = opening;
+  const withRunning = rows.map(e=>{ running += e.signed; return Object.assign({}, e, {running}); });
+  return { opening, rows: withRunning, closing: running, hasRange: !!(from || to) };
+}
+
 function daysBetween(fromDateStr, toDateStr){
   const d1 = new Date(fromDateStr+'T00:00:00');
   const d2 = new Date(toDateStr+'T00:00:00');
@@ -1420,7 +1438,13 @@ function sectionPartyDetail(){
   </div>
   <div class="card">
     <button class="submit-btn" onclick="sharePartyReport('${escapeAttr(name)}')">📤 रिपोर्ट WhatsApp पर भेजें</button>
-    <button class="submit-btn" style="margin-top:10px;" onclick="generatePartyStatementPdf('${escapeAttr(name)}')">📄 पार्टी लेजर स्टेटमेंट PDF बनाएं</button>
+    <h2 style="margin-top:16px;">📄 पार्टी लेजर स्टेटमेंट PDF</h2>
+    <p style="font-size:12px;color:var(--ink-soft);margin:0 0 8px;">दिनांक खाली छोड़ने पर पूरा इतिहास (जैसे सामान्यतः निकलता है) निकलेगा — चाहें तो सिर्फ़ चुनी हुई अवधि का स्टेटमेंट भी निकाल सकते हैं।</p>
+    <div class="row2">
+      <div><label>दिनांक से (वैकल्पिक)</label><input type="date" id="party_stmt_from" value="${state.partyStmtFrom||''}"></div>
+      <div><label>दिनांक तक (वैकल्पिक)</label><input type="date" id="party_stmt_to" value="${state.partyStmtTo||''}"></div>
+    </div>
+    <button class="submit-btn" style="margin-top:10px;" onclick="generatePartyStatementPdf('${escapeAttr(name)}')">📄 स्टेटमेंट PDF बनाएं</button>
     <div id="partyStatementResult"></div>
     <button class="submit-btn btn-secondary" style="margin-top:10px;" onclick="deletePartyRecord('${escapeAttr(name)}')">🗑️ पार्टी का ओपनिंग बैलेंस मिटाएं</button>
   </div>
@@ -1601,19 +1625,29 @@ function sharePartyReport(name){
 
 // ---------- पार्टी लेजर स्टेटमेंट PDF (हरा-नारंगी-सफ़ेद थीम) ----------
 
-async function buildPartyStatementPdfBlob(name){
+async function buildPartyStatementPdfBlob(name, from, to){
   const shopName = SHOPS.find(s=>s.id===state.shop).name;
   const shopInfo = state.data[state.shop].shopInfo || {};
   const shopAddress = shopInfo.address || '';
   const logoSrc = (document.querySelector('header img') || {}).src || '';
   const phone = (state.data[state.shop].partyInfo && state.data[state.shop].partyInfo[name] && state.data[state.shop].partyInfo[name].phone) || '';
-  const ledger = partyLedgerEntries(name);
-  const balance = ledger.length ? ledger[ledger.length-1].running : 0;
+  const rangeData = partyLedgerRangeData(name, from, to);
+  const balance = rangeData.closing;
   const balLabel = balance>0 ? 'आपको मिलना है (Receivable)' : (balance<0 ? 'आपको देना है (Payable)' : 'बराबर (Nil बकाया)');
   const balColor = balance>0 ? '#145A32' : (balance<0 ? '#B3402A' : '#666');
   const genDate = fmtDate(todayStr());
+  const periodLabel = (from || to) ? `${from?fmtDate(from):'शुरू से'} — ${to?fmtDate(to):'आज तक'}` : 'समस्त इतिहास (All Time)';
 
-  const rowsHtml = ledger.length ? ledger.map((e,idx)=>{
+  const openingRowHtml = from ? `<tr style="background:#FCF7EF;">
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">—</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;">${fmtDate(from)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;font-weight:700;">प्रारंभिक शेष (Balance B/F)</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;"></td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;"></td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:700;">${fmtMoney(Math.abs(rangeData.opening))}${rangeData.opening>0.5?' Dr':(rangeData.opening<-0.5?' Cr':'')}</td>
+    </tr>` : '';
+
+  const bodyRowsHtml = rangeData.rows.length ? rangeData.rows.map((e,idx)=>{
     const debit = e.signed>0 ? fmtMoney(e.signed) : '';
     const credit = e.signed<0 ? fmtMoney(Math.abs(e.signed)) : '';
     const dateLbl = e.date!=='—' ? fmtDate(e.date) : 'शुरूआती';
@@ -1626,7 +1660,10 @@ async function buildPartyStatementPdfBlob(name){
       <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#145A32;font-weight:600;">${credit}</td>
       <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:700;">${fmtMoney(Math.abs(e.running))}${balSuffix}</td>
     </tr>`;
-  }).join('') : `<tr><td colspan="6" style="padding:20px;text-align:center;color:#999;">अभी कोई एंट्री नहीं है</td></tr>`;
+  }).join('') : `<tr><td colspan="6" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई एंट्री नहीं है</td></tr>`;
+
+  const rowsHtml = openingRowHtml + bodyRowsHtml;
+  const totalEntries = rangeData.rows.length;
 
   const container = document.createElement('div');
   container.style.position='fixed';
@@ -1654,8 +1691,9 @@ async function buildPartyStatementPdfBlob(name){
           ${phone?`<div style="color:#666;margin-top:2px;">📞 ${escapeHtml(phone)}</div>`:''}
         </div>
         <div style="text-align:right;">
-          <div><span style="color:#999;">दिनांक:</span> <b>${genDate}</b></div>
-          <div><span style="color:#999;">कुल एंट्री:</span> <b>${ledger.length}</b></div>
+          <div><span style="color:#999;">अवधि:</span> <b>${periodLabel}</b></div>
+          <div><span style="color:#999;">बनाई गई दिनांक:</span> <b>${genDate}</b></div>
+          <div><span style="color:#999;">कुल एंट्री:</span> <b>${totalEntries}</b></div>
         </div>
       </div>
 
@@ -1712,10 +1750,18 @@ async function buildPartyStatementPdfBlob(name){
 }
 
 async function generatePartyStatementPdf(name){
+  const fromEl = document.getElementById('party_stmt_from');
+  const toEl = document.getElementById('party_stmt_to');
+  const from = fromEl ? fromEl.value : '';
+  const to = toEl ? toEl.value : '';
+  if(from && to && from > to){ alert('"से" वाली दिनांक "तक" वाली दिनांक से बाद की नहीं हो सकती'); return; }
+  state.partyStmtFrom = from || null;
+  state.partyStmtTo = to || null;
+
   const resBox = document.getElementById('partyStatementResult');
   if(resBox) resBox.innerHTML = `<div class="empty" style="padding:14px 0;">स्टेटमेंट बन रहा है…</div>`;
   try{
-    const pdfBlob = await buildPartyStatementPdfBlob(name);
+    const pdfBlob = await buildPartyStatementPdfBlob(name, from || null, to || null);
     const pdfUrl = URL.createObjectURL(pdfBlob);
     const fname = 'Ledger-'+name.replace(/[^a-zA-Z0-9अ-ह]/g,'_')+'-'+todayStr()+'.pdf';
     state.lastPartyStatementPdf = { blob: pdfBlob, url: pdfUrl, fname, name };
@@ -2008,6 +2054,7 @@ function sectionReport(){
     <select id="rep_type">
       <option value="all" ${state.reportType==='all'?'selected':''}>सभी लेन-देन</option>
       <option value="sale" ${state.reportType==='sale'?'selected':''}>बिक्री रिपोर्ट</option>
+      <option value="sold_stock" ${state.reportType==='sold_stock'?'selected':''}>📦 बिका हुआ स्टॉक रिपोर्ट</option>
       <option value="purchase" ${state.reportType==='purchase'?'selected':''}>खरीद रिपोर्ट</option>
       <option value="expense" ${state.reportType==='expense'?'selected':''}>खर्च रिपोर्ट</option>
       <option value="debtor" ${state.reportType==='debtor'?'selected':''}>देनदार रिपोर्ट (पार्टी-वार)</option>
@@ -2107,6 +2154,35 @@ function renderReportResults(type, list, from, to){
         <div class="stat balance" style="grid-column:span 2;"><div class="label">लाभ</div><div class="val ${(tot.totalSaleAmt-tot.totalCostAmt)>=0?'pos':'neg'}">${fmtMoney(tot.totalSaleAmt-tot.totalCostAmt)}</div></div>
       </div>`;
     bodyHtml = filtered.length ? filtered.slice().sort((a,b)=>b.ts-a.ts).map(reportEntryRowHtml).join('') : `<div class="empty">इस अवधि में कोई बिक्री नहीं मिली</div>`;
+  } else if(type==='sold_stock'){
+    reportTitle = '📦 बिका हुआ स्टॉक रिपोर्ट (Sold Stock Report)';
+    const filtered = list.filter(t=>(t.type==='sale_cash'||t.type==='sale_credit') && t.stockRestore);
+    const totalQty = filtered.reduce((s,t)=>s+((t.stockRestore&&t.stockRestore.qtyUsed)||1),0);
+    const totalSaleAmt = filtered.reduce((s,t)=>s+(t.amount||0),0);
+    const totalCostAmt = filtered.reduce((s,t)=>s+(t.cost||0),0);
+    const totalProfit = totalSaleAmt - totalCostAmt;
+    summaryHtml = `
+      <div class="summary-grid">
+        <div class="stat"><div class="label">कुल बिकी संख्या (Qty)</div><div class="val">${totalQty}</div></div>
+        <div class="stat"><div class="label">कुल बिक्री राशि</div><div class="val pos">${fmtMoney(totalSaleAmt)}</div></div>
+        <div class="stat"><div class="label">कुल लागत</div><div class="val">${fmtMoney(totalCostAmt)}</div></div>
+        <div class="stat balance"><div class="label">कुल लाभ</div><div class="val ${totalProfit>=0?'pos':'neg'}">${fmtMoney(totalProfit)}</div></div>
+      </div>`;
+    bodyHtml = filtered.length ? filtered.slice().sort((a,b)=>b.ts-a.ts).map(t=>{
+      const sr = t.stockRestore;
+      const qty = sr.qtyUsed || 1;
+      const profit = (t.amount||0) - (t.cost||0);
+      return `<div class="entry">
+        <div>
+          <span class="party">${escapeHtml(sr.name)}${sr.company?(' — '+escapeHtml(sr.company)):''}</span>
+          <div class="note">${fmtDate(t.date)} · मात्रा: ${qty}${t.party?(' · '+escapeHtml(t.party)):''}${sr.imei?(' · IMEI: '+escapeHtml(sr.imei)):''}</div>
+        </div>
+        <div style="text-align:right;">
+          <span class="amt pos">${fmtMoney(t.amount)}</span>
+          <div class="note">लागत ${fmtMoney(t.cost||0)} · <span class="${profit>=0?'pos':'neg'}">लाभ ${fmtMoney(profit)}</span></div>
+        </div>
+      </div>`;
+    }).join('') : `<div class="empty">इस अवधि में स्टॉक से जुड़ी कोई बिक्री नहीं मिली</div>`;
   } else if(type==='purchase'){
     reportTitle = 'खरीद रिपोर्ट';
     const filtered = list.filter(t=>t.type==='purchase_cash'||t.type==='purchase_credit');
@@ -2211,6 +2287,12 @@ function buildReportShareText(title, shopName, from, to, type, list){
     const filtered = list.filter(t=>t.type==='sale_cash'||t.type==='sale_credit');
     const ft = computeTotals(filtered);
     text += `कुल बिक्री: ${fmtMoney(ft.totalSaleAmt)}\nलागत: ${fmtMoney(ft.totalCostAmt)}\nलाभ: ${fmtMoney(ft.totalSaleAmt-ft.totalCostAmt)}\n\n`;
+  } else if(type==='sold_stock'){
+    const filtered = list.filter(t=>(t.type==='sale_cash'||t.type==='sale_credit') && t.stockRestore);
+    const totalQty = filtered.reduce((s,t)=>s+((t.stockRestore&&t.stockRestore.qtyUsed)||1),0);
+    const totalSaleAmt = filtered.reduce((s,t)=>s+(t.amount||0),0);
+    const totalCostAmt = filtered.reduce((s,t)=>s+(t.cost||0),0);
+    text += `कुल बिकी संख्या: ${totalQty}\nकुल बिक्री राशि: ${fmtMoney(totalSaleAmt)}\nकुल लागत: ${fmtMoney(totalCostAmt)}\nकुल लाभ: ${fmtMoney(totalSaleAmt-totalCostAmt)}\n\n`;
   } else if(type==='purchase'){
     const filtered = list.filter(t=>t.type==='purchase_cash'||t.type==='purchase_credit');
     const ft = computeTotals(filtered);
@@ -2445,9 +2527,10 @@ function generateComparison(kind){
 // ---------- बैलेंस शीट (Assets = Liabilities + Capital) ----------
 
 function sectionBalanceSheet(){
+  const asOf = state.bsAsOfDate || null;
   const perShop = SHOPS.map(s=>({
     id: s.id, name: s.name,
-    cum: computeCumulative(s.id),
+    cum: computeCumulative(s.id, asOf),
     stock: state.data[s.id].stock
   }));
   const multiShop = SHOPS.length > 1;
@@ -2477,12 +2560,21 @@ function sectionBalanceSheet(){
   const difference = totalAssets - totalLiabCapital;
   const isBalanced = Math.abs(difference) < 1;
 
-  state.lastBalanceSheetText = buildBalanceSheetShareText(bothWord, totalCash, totalBank, totalStockValue, totalDebtors, totalCreditors, totalCard, netCapital, totalAssets, totalLiabCapital, difference);
+  const asOfLabel = asOf ? fmtDate(asOf) : 'आज';
+  state.lastBalanceSheetText = buildBalanceSheetShareText(bothWord, asOfLabel, totalCash, totalBank, totalStockValue, totalDebtors, totalCreditors, totalCard, netCapital, totalAssets, totalLiabCapital, difference);
 
   return `
   <div class="card">
     <h2>⚖️ बैलेंस शीट</h2>
-    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">आज तक की कुल संपत्ति (Assets) बनाम देयताएं + पूंजी (Liabilities + Capital) — ${bothWord} मिलाकर।</p>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">${asOfLabel} तक की कुल संपत्ति (Assets) बनाम देयताएं + पूंजी (Liabilities + Capital) — ${bothWord} मिलाकर।</p>
+    <div class="row2">
+      <div><label>तारीख तक (खाली छोड़ें = आज तक)</label><input type="date" id="bs_asof" value="${state.bsAsOfDate||''}"></div>
+      <div style="display:flex;align-items:flex-end;gap:8px;">
+        <button class="submit-btn" style="margin:0;" onclick="applyBalanceSheetAsOf()">लागू करें</button>
+        <button class="submit-btn btn-secondary" style="margin:0;" onclick="clearBalanceSheetAsOf()">रीसेट</button>
+      </div>
+    </div>
+    ${asOf ? `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">नोट: स्टॉक की राशि हमेशा वर्तमान मूल्य दिखाती है (पुरानी तारीख के लिए ऐतिहासिक स्टॉक ट्रैक नहीं होता)।</p>` : ''}
   </div>
   <div class="card">
     <h2>संपत्ति (Assets)</h2>
@@ -2509,8 +2601,18 @@ function sectionBalanceSheet(){
   </div>`;
 }
 
-function buildBalanceSheetShareText(bothWord, cash, bank, stockVal, debtors, creditors, card, capital, totalAssets, totalLiabCapital, difference){
-  let text = `⚖️ ${bothWord} — बैलेंस शीट (आज तक)\n\n`;
+function applyBalanceSheetAsOf(){
+  const v = document.getElementById('bs_asof').value;
+  state.bsAsOfDate = v || null;
+  renderSection();
+}
+function clearBalanceSheetAsOf(){
+  state.bsAsOfDate = null;
+  renderSection();
+}
+
+function buildBalanceSheetShareText(bothWord, asOfLabel, cash, bank, stockVal, debtors, creditors, card, capital, totalAssets, totalLiabCapital, difference){
+  let text = `⚖️ ${bothWord} — बैलेंस शीट (${asOfLabel} तक)\n\n`;
   text += `संपत्ति (Assets):\n`;
   text += `नकद: ${fmtMoney(cash)}\n`;
   text += `बैंक: ${fmtMoney(bank)}\n`;
@@ -2545,13 +2647,15 @@ function shareBalanceSheet(){
 // ---------- ट्रायल बैलेंस (Trial Balance — सभी खातों की नामे/जमा शेष) ----------
 
 function sectionTrialBalance(){
+  const asOf = state.tbAsOfDate || null;
   const perShop = SHOPS.map(s=>({
     id: s.id, name: s.name,
-    cum: computeCumulative(s.id),
+    cum: computeCumulative(s.id, asOf),
     stock: state.data[s.id].stock
   }));
   const multiShop = SHOPS.length > 1;
   const bothWord = multiShop ? 'सभी दुकानों' : SHOPS[0].name;
+  const asOfLabel = asOf ? fmtDate(asOf) : 'आज';
 
   const rows = [];
   let totalDr = 0, totalCr = 0;
@@ -2561,7 +2665,7 @@ function sectionTrialBalance(){
     if(Math.abs(p.cum.cash) > 0.5){ rows.push({label:'नकद (Cash in Hand)'+tag, dr:p.cum.cash>0?p.cum.cash:0, cr:p.cum.cash<0?-p.cum.cash:0}); }
     if(Math.abs(p.cum.bank) > 0.5){ rows.push({label:'🏦 बैंक बैलेंस'+tag, dr:p.cum.bank>0?p.cum.bank:0, cr:p.cum.bank<0?-p.cum.bank:0}); }
     const stockVal = p.stock.reduce((s,it)=>s+((it.costPrice||0)*(it.qty||0)),0) + computeManualStockValue(p.id);
-    if(Math.abs(stockVal) > 0.5){ rows.push({label:'📦 स्टॉक (लागत मूल्य पर)'+tag, dr:stockVal, cr:0}); }
+    if(Math.abs(stockVal) > 0.5){ rows.push({label:'📦 स्टॉक (वर्तमान लागत मूल्य पर)'+tag, dr:stockVal, cr:0}); }
     Object.entries(p.cum.debtors).forEach(([name,amt])=>{
       if(amt > 0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:amt, cr:0});
       else if(amt < -0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:0, cr:-amt});
@@ -2584,7 +2688,7 @@ function sectionTrialBalance(){
   const diff = totalDr - totalCr;
   const isBalanced = Math.abs(diff) < 1;
 
-  state.lastTrialBalance = { rows, totalDr, totalCr, diff, isBalanced, bothWord };
+  state.lastTrialBalance = { rows, totalDr, totalCr, diff, isBalanced, bothWord, asOfLabel };
 
   const rowsHtml = rows.map(r=>`
     <div class="party-row">
@@ -2598,7 +2702,15 @@ function sectionTrialBalance(){
   return `
   <div class="card">
     <h2>🧮 ट्रायल बैलेंस (Trial Balance)</h2>
-    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">सभी खातों की नामे (Dr) व जमा (Cr) शेष — ${bothWord} मिलाकर, आज तक की स्थिति।</p>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">सभी खातों की नामे (Dr) व जमा (Cr) शेष — ${bothWord} मिलाकर, ${asOfLabel} तक की स्थिति।</p>
+    <div class="row2">
+      <div><label>तारीख तक (खाली छोड़ें = आज तक)</label><input type="date" id="tb_asof" value="${state.tbAsOfDate||''}"></div>
+      <div style="display:flex;align-items:flex-end;gap:8px;">
+        <button class="submit-btn" style="margin:0;" onclick="applyTrialBalanceAsOf()">लागू करें</button>
+        <button class="submit-btn btn-secondary" style="margin:0;" onclick="clearTrialBalanceAsOf()">रीसेट</button>
+      </div>
+    </div>
+    ${asOf ? `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">नोट: स्टॉक की राशि हमेशा वर्तमान मूल्य दिखाती है (पुरानी तारीख के लिए ऐतिहासिक स्टॉक ट्रैक नहीं होता)।</p>` : ''}
   </div>
   <div class="card">
     <div class="party-row" style="font-weight:700;color:var(--maroon-deep);border-bottom:2px solid var(--gold);padding-bottom:8px;">
@@ -2625,6 +2737,16 @@ function sectionTrialBalance(){
     <button class="submit-btn" onclick="generateTrialBalancePdf()">📄 ट्रायल बैलेंस PDF बनाएं</button>
     <div id="trialBalanceResult"></div>
   </div>`;
+}
+
+function applyTrialBalanceAsOf(){
+  const v = document.getElementById('tb_asof').value;
+  state.tbAsOfDate = v || null;
+  renderSection();
+}
+function clearTrialBalanceAsOf(){
+  state.tbAsOfDate = null;
+  renderSection();
 }
 
 async function buildTrialBalancePdfBlob(tb){
@@ -2664,7 +2786,7 @@ async function buildTrialBalancePdfBlob(tb){
       <div style="padding:20px 34px 0;display:flex;justify-content:space-between;font-size:13px;">
         <div>
           <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">दायरा</div>
-          <div style="font-size:15px;font-weight:700;color:#145A32;">${escapeHtml(tb.bothWord)} — आज तक</div>
+          <div style="font-size:15px;font-weight:700;color:#145A32;">${escapeHtml(tb.bothWord)} — ${escapeHtml(tb.asOfLabel||'आज')} तक</div>
         </div>
         <div style="text-align:right;">
           <div><span style="color:#999;">दिनांक:</span> <b>${genDate}</b></div>
