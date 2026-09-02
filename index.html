@@ -1625,6 +1625,32 @@ function sharePartyReport(name){
 
 // ---------- पार्टी लेजर स्टेटमेंट PDF (हरा-नारंगी-सफ़ेद थीम) ----------
 
+// लंबी रिपोर्ट/लेजर के लिए कैनवस को कई पेज में बांटकर PDF में जोड़ना — ताकि कोई भी हिस्सा कटे नहीं
+function addCanvasPagesToPdf(pdf, canvas, margin){
+  margin = margin || 24;
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const usableWidthPt = pageWidth - margin*2;
+  const usableHeightPt = pageHeight - margin*2;
+  const scale = usableWidthPt / canvas.width; // px से pt में बदलने का अनुपात
+  const pageHeightPx = Math.floor(usableHeightPt / scale);
+  let y = 0;
+  let first = true;
+  while(y < canvas.height){
+    const sliceH = Math.min(pageHeightPx, canvas.height - y);
+    const sliceCanvas = document.createElement('canvas');
+    sliceCanvas.width = canvas.width;
+    sliceCanvas.height = sliceH;
+    const ctx = sliceCanvas.getContext('2d');
+    ctx.drawImage(canvas, 0, y, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+    const sliceData = sliceCanvas.toDataURL('image/png');
+    if(!first) pdf.addPage();
+    pdf.addImage(sliceData, 'PNG', margin, margin, usableWidthPt, sliceH*scale);
+    y += sliceH;
+    first = false;
+  }
+}
+
 async function buildPartyStatementPdfBlob(name, from, to){
   const shopName = SHOPS.find(s=>s.id===state.shop).name;
   const shopInfo = state.data[state.shop].shopInfo || {};
@@ -1735,17 +1761,9 @@ async function buildPartyStatementPdfBlob(name, from, to){
   const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff'});
   document.body.removeChild(container);
 
-  const imgData = canvas.toDataURL('image/png');
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({unit:'pt', format:'a4'});
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 24;
-  const imgWidth = pageWidth - margin*2;
-  const imgHeight = canvas.height * (imgWidth/canvas.width);
-  const finalHeight = Math.min(imgHeight, pageHeight - margin*2);
-  const finalWidth = finalHeight===imgHeight ? imgWidth : canvas.width*(finalHeight/canvas.height);
-  pdf.addImage(imgData, 'PNG', margin, margin, finalWidth, finalHeight);
+  addCanvasPagesToPdf(pdf, canvas, 24);
   return pdf.output('blob');
 }
 
@@ -2095,6 +2113,27 @@ function reportEntryRowHtml(t){
   </div>`;
 }
 
+function groupByPeriod(list, granularity){
+  const groups = {};
+  list.forEach(t=>{
+    const meta = TYPE_META[t.type];
+    if(!meta || !t.date) return;
+    const key = granularity==='month' ? t.date.slice(0,7) : t.date.slice(0,4);
+    if(!groups[key]) groups[key] = {sale:0, cost:0, expense:0};
+    if(meta.kind==='sale'){ groups[key].sale += (t.amount||0); groups[key].cost += (t.cost||0); }
+    else if(meta.kind==='expense'){ groups[key].expense += (t.amount||0); }
+  });
+  return groups;
+}
+function periodLabel(key, type){
+  if(type==='monthly'){
+    const parts = key.split('-');
+    const months = ['जनवरी','फ़रवरी','मार्च','अप्रैल','मई','जून','जुलाई','अगस्त','सितंबर','अक्टूबर','नवंबर','दिसंबर'];
+    const mIdx = parseInt(parts[1],10)-1;
+    return `${months[mIdx]||parts[1]} ${parts[0]}`;
+  }
+  return key;
+}
 function partyMovementForRange(list, kind){
   const movement = {};
   list.forEach(t=>{
@@ -2259,6 +2298,7 @@ function renderReportResults(type, list, from, to){
   }
 
   state.lastReportText = buildReportShareText(reportTitle, shopName, from, to, type, list);
+  state.lastReportTitle = reportTitle;
 
   return `
   <div class="card">
@@ -2268,6 +2308,8 @@ function renderReportResults(type, list, from, to){
   </div>
   <div class="card">
     <button class="submit-btn" onclick="shareGeneratedReport()">📤 यह रिपोर्ट WhatsApp पर भेजें</button>
+    <button class="submit-btn btn-secondary" style="margin-top:10px;" onclick="generateReportPdf()">📄 PDF बनाएं (डाउनलोड/शेयर)</button>
+    <div id="genericReportPdfResult"></div>
   </div>
   <div class="card">
     <h2>विस्तृत सूची</h2>
@@ -2330,6 +2372,200 @@ function shareGeneratedReport(){
   } else {
     alert('इस ब्राउज़र में सीधे शेयर नहीं हो पा रहा। कृपया स्क्रीनशॉट लेकर भेजें।');
   }
+}
+
+// ---------- किसी भी रिपोर्ट (सभी/बिक्री/खरीद/खर्च/देनदार/लेनदार/पूंजी/महीना-वार/साल-वार) की PDF ----------
+
+async function buildGenericReportPdfBlob(title, from, to, type, list){
+  const shopName = SHOPS.find(s=>s.id===state.shop).name;
+  const shopInfo = state.data[state.shop].shopInfo || {};
+  const shopAddress = shopInfo.address || '';
+  const logoSrc = (document.querySelector('header img') || {}).src || '';
+  const genDate = fmtDate(todayStr());
+  const periodTxt = `${fmtDate(from)} — ${fmtDate(to)}`;
+
+  const statBox = (label,val,color)=>`<div style="flex:1;min-width:150px;background:#FDEEDF;border-radius:10px;padding:12px 14px;margin:4px;">
+    <div style="font-size:11px;color:#999;text-transform:uppercase;">${escapeHtml(label)}</div>
+    <div style="font-size:17px;font-weight:800;color:${color||'#145A32'};margin-top:2px;">${val}</div>
+  </div>`;
+
+  let statCards = '';
+  if(type==='all'){
+    const tot = computeTotals(list);
+    statCards = statBox('कुल बिक्री', fmtMoney(tot.totalSaleAmt)) + statBox('कुल खरीद', fmtMoney(tot.totalPurchaseAmt), '#2C5282') + statBox('कुल खर्च', fmtMoney(tot.totalExpenseAmt), '#B3402A') + statBox('लाभ/हानि', fmtMoney(tot.profit), tot.profit>=0?'#145A32':'#B3402A');
+  } else if(type==='sale'){
+    const filtered = list.filter(t=>t.type==='sale_cash'||t.type==='sale_credit');
+    const ft = computeTotals(filtered);
+    statCards = statBox('कुल बिक्री', fmtMoney(ft.totalSaleAmt)) + statBox('लागत', fmtMoney(ft.totalCostAmt)) + statBox('लाभ', fmtMoney(ft.totalSaleAmt-ft.totalCostAmt));
+  } else if(type==='sold_stock'){
+    const filtered = list.filter(t=>(t.type==='sale_cash'||t.type==='sale_credit') && t.stockRestore);
+    const totalQty = filtered.reduce((s,t)=>s+((t.stockRestore&&t.stockRestore.qtyUsed)||1),0);
+    const totalSaleAmt = filtered.reduce((s,t)=>s+(t.amount||0),0);
+    const totalCostAmt = filtered.reduce((s,t)=>s+(t.cost||0),0);
+    statCards = statBox('कुल बिकी संख्या', totalQty) + statBox('बिक्री राशि', fmtMoney(totalSaleAmt)) + statBox('लागत', fmtMoney(totalCostAmt)) + statBox('लाभ', fmtMoney(totalSaleAmt-totalCostAmt));
+  } else if(type==='purchase'){
+    const filtered = list.filter(t=>t.type==='purchase_cash'||t.type==='purchase_credit');
+    const ft = computeTotals(filtered);
+    statCards = statBox('कुल खरीद', fmtMoney(ft.totalPurchaseAmt), '#2C5282');
+  } else if(type==='expense'){
+    const filtered = list.filter(t=>t.type==='expense');
+    const ft = computeTotals(filtered);
+    const byCat = {};
+    filtered.forEach(t=>{ const c=t.expenseCategory||'अन्य खर्च'; byCat[c]=(byCat[c]||0)+(t.amount||0); });
+    statCards = statBox('कुल खर्च', fmtMoney(ft.totalExpenseAmt), '#B3402A');
+    Object.entries(byCat).sort((a,b)=>b[1]-a[1]).forEach(([cat,amt])=>{ statCards += statBox(cat, fmtMoney(amt), '#B3402A'); });
+  } else if(type==='capital'){
+    const filtered = list.filter(t=>t.type==='capital_invest'||t.type==='capital_withdraw');
+    const ft = computeTotals(filtered);
+    statCards = statBox('कुल निवेश', fmtMoney(ft.totalCapitalInvest)) + statBox('कुल निकासी', fmtMoney(ft.totalCapitalWithdraw), '#B3402A');
+  } else if(type==='debtor' || type==='creditor'){
+    const entries = partyMovementForRange(list, type);
+    const total = entries.reduce((s,[k,v])=>s+v,0);
+    statCards = statBox(type==='debtor'?'कुल शुद्ध बढ़ोतरी (पावना)':'कुल शुद्ध बढ़ोतरी (देय)', fmtMoney(total), total>=0?'#145A32':'#B3402A');
+  } else if(type==='monthly' || type==='yearly'){
+    const groups = groupByPeriod(list, type==='monthly' ? 'month' : 'year');
+    const keys = Object.keys(groups);
+    const grandSale = keys.reduce((s,k)=>s+groups[k].sale,0);
+    const grandCost = keys.reduce((s,k)=>s+groups[k].cost,0);
+    const grandExpense = keys.reduce((s,k)=>s+groups[k].expense,0);
+    statCards = statBox('कुल बिक्री', fmtMoney(grandSale)) + statBox('कुल खर्च', fmtMoney(grandExpense), '#B3402A') + statBox('कुल लाभ/हानि', fmtMoney(grandSale-grandCost-grandExpense));
+  }
+
+  let detailRowsHtml = '';
+  let tableHeadHtml = '';
+  if(type==='debtor' || type==='creditor'){
+    tableHeadHtml = `<tr style="background:#FDEEDF;"><th style="padding:10px;text-align:center;width:32px;color:#145A32;">S.No</th><th style="padding:10px;text-align:left;color:#145A32;" colspan="3">पार्टी</th><th style="padding:10px;text-align:right;width:110px;color:#145A32;">शुद्ध राशि</th></tr>`;
+    const entries = partyMovementForRange(list, type);
+    detailRowsHtml = entries.length ? entries.map(([name,amt],idx)=>`
+      <tr>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;" colspan="3">${escapeHtml(name)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:700;color:${amt>=0?'#145A32':'#B3402A'};">${amt>=0?'+':''}${fmtMoney(amt)}</td>
+      </tr>`).join('') : `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई गतिविधि नहीं मिली</td></tr>`;
+  } else if(type==='monthly' || type==='yearly'){
+    tableHeadHtml = `<tr style="background:#FDEEDF;"><th style="padding:10px;text-align:center;width:32px;color:#145A32;">S.No</th><th style="padding:10px;text-align:left;color:#145A32;">अवधि</th><th style="padding:10px;text-align:right;width:90px;color:#145A32;">बिक्री</th><th style="padding:10px;text-align:right;width:90px;color:#145A32;">खर्च</th><th style="padding:10px;text-align:right;width:100px;color:#145A32;">लाभ/हानि</th></tr>`;
+    const groups = groupByPeriod(list, type==='monthly' ? 'month' : 'year');
+    const keys = Object.keys(groups).sort();
+    detailRowsHtml = keys.length ? keys.map((k,idx)=>{
+      const g = groups[k]; const profit = g.sale-g.cost-g.expense;
+      return `<tr>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;">${escapeHtml(periodLabel(k,type))}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;">${fmtMoney(g.sale)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;">${fmtMoney(g.expense)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:700;color:${profit>=0?'#145A32':'#B3402A'};">${fmtMoney(profit)}</td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई एंट्री नहीं मिली</td></tr>`;
+  } else {
+    tableHeadHtml = `<tr style="background:#FDEEDF;"><th style="padding:10px;text-align:center;width:32px;color:#145A32;">S.No</th><th style="padding:10px;text-align:left;width:70px;color:#145A32;">दिनांक</th><th style="padding:10px;text-align:left;color:#145A32;">विवरण</th><th style="padding:10px;text-align:left;color:#145A32;">टिप्पणी</th><th style="padding:10px;text-align:right;width:100px;color:#145A32;">राशि</th></tr>`;
+    let filtered = list;
+    if(type==='sale') filtered = list.filter(t=>t.type==='sale_cash'||t.type==='sale_credit');
+    else if(type==='sold_stock') filtered = list.filter(t=>(t.type==='sale_cash'||t.type==='sale_credit') && t.stockRestore);
+    else if(type==='purchase') filtered = list.filter(t=>t.type==='purchase_cash'||t.type==='purchase_credit');
+    else if(type==='expense') filtered = list.filter(t=>t.type==='expense');
+    else if(type==='capital') filtered = list.filter(t=>t.type==='capital_invest'||t.type==='capital_withdraw');
+    const sorted = filtered.slice().sort((a,b)=> a.date===b.date ? a.ts-b.ts : (a.date<b.date?-1:1));
+    detailRowsHtml = sorted.length ? sorted.map((t,idx)=>{
+      const meta = TYPE_META[t.type] || {label:t.type};
+      let amtColor = '#145A32';
+      if(meta.kind==='purchase' || meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give') amtColor = '#B3402A';
+      const catNote = (t.type==='expense' && t.expenseCategory) ? (' · '+escapeHtml(t.expenseCategory)) : '';
+      return `<tr>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;">${fmtDate(t.date)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;">${escapeHtml(meta.label)}${t.party?('<br><span style="color:#999;font-size:11px;">'+escapeHtml(t.party)+'</span>'):''}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;font-size:11px;color:#999;">${t.note?escapeHtml(t.note):''}${catNote}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:700;color:${amtColor};">${fmtMoney(t.amount)}</td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई एंट्री नहीं मिली</td></tr>`;
+  }
+
+  const container = document.createElement('div');
+  container.style.position='fixed';
+  container.style.left='-99999px';
+  container.style.top='0';
+  container.style.width='780px';
+  container.style.background='#fff';
+  container.style.fontFamily = "'Noto Sans Devanagari','Noto Sans',sans-serif";
+  container.innerHTML = `
+    <div style="border:2px solid #145A32;border-radius:10px;overflow:hidden;">
+      <div style="background:linear-gradient(135deg,#145A32,#0B3D24);padding:26px 34px;display:flex;align-items:center;gap:18px;">
+        ${logoSrc?`<img src="${logoSrc}" style="width:60px;height:60px;border-radius:12px;background:#fff;padding:3px;">`:''}
+        <div>
+          <div style="font-size:26px;font-weight:800;color:#fff;letter-spacing:0.5px;">${escapeHtml(shopName)}</div>
+          ${shopAddress?`<div style="font-size:12px;color:#FCE3C9;margin-top:3px;">${escapeHtml(shopAddress)}</div>`:''}
+          <div style="font-size:13px;color:#F5A25A;letter-spacing:1px;margin-top:4px;font-weight:700;">📊 ${escapeHtml(title.toUpperCase())}</div>
+        </div>
+      </div>
+      <div style="padding:20px 34px 0;display:flex;justify-content:space-between;font-size:13px;">
+        <div>
+          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">अवधि</div>
+          <div style="font-size:15px;font-weight:700;color:#145A32;">${periodTxt}</div>
+        </div>
+        <div style="text-align:right;">
+          <div><span style="color:#999;">बनाई गई दिनांक:</span> <b>${genDate}</b></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;padding:14px 30px 0;">${statCards}</div>
+      <div style="padding:16px 34px 0;">
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+          <thead>${tableHeadHtml}</thead>
+          <tbody>${detailRowsHtml}</tbody>
+        </table>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:30px 34px 20px;">
+        <div style="font-size:11.5px;color:#999;line-height:1.6;">यह कंप्यूटर जनित रिपोर्ट है।</div>
+        <div style="text-align:center;">
+          <div style="border-top:1px solid #999;padding-top:6px;width:160px;font-size:11.5px;color:#666;">अधिकृत हस्ताक्षर</div>
+        </div>
+      </div>
+      <div style="background:#FDEEDF;text-align:center;padding:10px;font-size:11px;color:#145A32;font-weight:700;letter-spacing:0.5px;">
+        ⚡ Powered by Dongare Mobile Bhainsdehi
+      </div>
+    </div>
+  `;
+  document.body.appendChild(container);
+  const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff'});
+  document.body.removeChild(container);
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({unit:'pt', format:'a4'});
+  addCanvasPagesToPdf(pdf, canvas, 24);
+  return pdf.output('blob');
+}
+
+async function generateReportPdf(){
+  const type = state.reportType;
+  const from = state.reportFrom;
+  const to = state.reportTo;
+  const title = state.lastReportTitle;
+  if(!type || !from || !to || !title){ alert('पहले ऊपर "रिपोर्ट बनाएं" दबाकर रिपोर्ट देखें'); return; }
+  const list = currentTx().filter(t=>t.date>=from && t.date<=to);
+  const resBox = document.getElementById('genericReportPdfResult');
+  if(resBox) resBox.innerHTML = `<div class="empty" style="padding:14px 0;">PDF बन रहा है…</div>`;
+  try{
+    const pdfBlob = await buildGenericReportPdfBlob(title, from, to, type, list);
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+    const fname = 'Report-'+type+'-'+from+'_to_'+to+'.pdf';
+    state.lastGenericReportPdf = { blob: pdfBlob, url: pdfUrl, fname };
+    if(resBox) resBox.innerHTML = `
+      <a href="${pdfUrl}" download="${fname}" class="submit-btn" style="display:block;text-decoration:none;text-align:center;box-sizing:border-box;margin-top:10px;">⬇️ PDF डाउनलोड करें</a>
+      <button class="submit-btn" style="margin-top:10px;" onclick="shareGenericReportPdf()">📤 PDF WhatsApp पर शेयर करें</button>`;
+  }catch(e){
+    if(resBox) resBox.innerHTML = `<div class="empty" style="padding:14px 0;">PDF बनाने में दिक्कत हुई, कृपया दोबारा कोशिश करें।</div>`;
+  }
+}
+
+function shareGenericReportPdf(){
+  const st = state.lastGenericReportPdf;
+  if(!st){ alert('पहले PDF बनाएं'); return; }
+  try{
+    const file = new File([st.blob], st.fname, {type:'application/pdf'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      navigator.share({ files:[file], title:'Report', text:'🧾 रिपोर्ट' }).catch(()=>{});
+      return;
+    }
+  }catch(e){}
+  alert('इस ब्राउज़र में सीधे PDF शेयर नहीं हो पा रहा। कृपया पहले "⬇️ PDF डाउनलोड करें" दबाएं, फिर WhatsApp खोलकर मैन्युअल रूप से भेज दें।');
 }
 
 // ---------- स्कीम/छूट खाता (कौन सी फ़र्म से कितनी स्कीम/छूट मिली) ----------
@@ -2836,17 +3072,9 @@ async function buildTrialBalancePdfBlob(tb){
   const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff'});
   document.body.removeChild(container);
 
-  const imgData = canvas.toDataURL('image/png');
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({unit:'pt', format:'a4'});
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 24;
-  const imgWidth = pageWidth - margin*2;
-  const imgHeight = canvas.height * (imgWidth/canvas.width);
-  const finalHeight = Math.min(imgHeight, pageHeight - margin*2);
-  const finalWidth = finalHeight===imgHeight ? imgWidth : canvas.width*(finalHeight/canvas.height);
-  pdf.addImage(imgData, 'PNG', margin, margin, finalWidth, finalHeight);
+  addCanvasPagesToPdf(pdf, canvas, 24);
   return pdf.output('blob');
 }
 
