@@ -3231,8 +3231,17 @@ function sectionCapital(){
   const periodHistory = (capFrom || capTo) ? history.filter(h=> (!capFrom || h.date>=capFrom) && (!capTo || h.date<=capTo) ) : history;
   const periodInvest = periodHistory.filter(h=>h.type==='capital_invest').reduce((s,h)=>s+h.amount,0);
   const periodWithdraw = periodHistory.filter(h=>h.type==='capital_withdraw').reduce((s,h)=>s+h.amount,0);
+  const periodPersonalExpenses = personalExpenses.filter(e=>
+    (!capFrom || e.date>=capFrom) && (!capTo || e.date<=capTo)
+  );
+  const periodPersonalSpent = periodPersonalExpenses.reduce((s,e)=>s+(Number(e.amount)||0),0);
   const capPeriodLabel = (capFrom || capTo) ? `${capFrom?fmtDate(capFrom):'शुरू से'} — ${capTo?fmtDate(capTo):'आज तक'}` : 'समस्त इतिहास (All Time)';
-  state.lastCapitalStatement = { history: periodHistory, periodInvest, periodWithdraw, periodLabel: capPeriodLabel, bothWord: multiShop ? shopsLabel : SHOPS[0].name };
+  state.lastCapitalStatement = {
+    history: periodHistory, periodInvest, periodWithdraw, periodPersonalExpenses, periodPersonalSpent,
+    periodLabel: capPeriodLabel, bothWord: multiShop ? shopsLabel : SHOPS[0].name,
+    totalInvest, totalWithdraw, totalProfit, netCapital, totalCashBoth, totalBankBoth, totalCardBoth,
+    totalPersonalSpent, cashInHand, openingWithdrawSum
+  };
 
   const periodHistoryRows = periodHistory.length ? periodHistory.map(h=>`
     <div class="entry">
@@ -3356,6 +3365,15 @@ async function buildCapitalStatementPdfBlob(data){
   const logoSrc = (document.querySelector('header img') || {}).src || '';
   const genDate = fmtDate(todayStr());
 
+  const personal = data.periodPersonalExpenses || [];
+  const personalRowsHtml = personal.length ? personal.map((e,idx)=>`
+    <tr>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;">${fmtDate(e.date)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;">घर/व्यक्तिगत खर्च${e.note?('<br><span style="color:#999;font-size:11px;">'+escapeHtml(e.note)+'</span>'):''}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#B3402A;font-weight:600;">${fmtMoney(e.amount)}</td>
+    </tr>`).join('') : `<tr><td colspan="4" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई व्यक्तिगत/घर खर्च नहीं है</td></tr>`;
+
   const rowsHtml = data.history.length ? data.history.map((h,idx)=>`
     <tr>
       <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
@@ -3363,80 +3381,118 @@ async function buildCapitalStatementPdfBlob(data){
       <td style="padding:8px 10px;border-bottom:1px solid #eee;">${escapeHtml(h.shopName)}${h.note?('<br><span style="color:#999;font-size:11px;">'+escapeHtml(h.note)+'</span>'):''}</td>
       <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#145A32;font-weight:600;">${h.type==='capital_invest'?fmtMoney(h.amount):''}</td>
       <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#D9670C;font-weight:600;">${h.type==='capital_withdraw'?fmtMoney(h.amount):''}</td>
-    </tr>`).join('') : `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई एंट्री नहीं है</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई निवेश/निकासी नहीं है</td></tr>`;
 
   const container = document.createElement('div');
   container.style.position='fixed';
   container.style.left='-99999px';
   container.style.top='0';
   container.style.width='780px';
-  container.style.minHeight='1100px';
   container.style.background='#fff';
   container.style.fontFamily = "'Noto Sans Devanagari','Noto Sans',sans-serif";
   container.innerHTML = `
-    <div style="border:2px solid #145A32;border-radius:10px;overflow:hidden;">
+    <div style="border:2px solid #145A32;border-radius:10px;overflow:hidden;background:#fff;">
       <div style="background:linear-gradient(135deg,#145A32,#0B3D24);padding:26px 34px;display:flex;align-items:center;gap:18px;">
         ${logoSrc?`<img src="${logoSrc}" style="width:60px;height:60px;border-radius:12px;background:#fff;padding:3px;">`:''}
         <div>
           <div style="font-size:26px;font-weight:800;color:#fff;letter-spacing:0.5px;">${escapeHtml(shopName)}</div>
           ${shopAddress?`<div style="font-size:12px;color:#FCE3C9;margin-top:3px;">${escapeHtml(shopAddress)}</div>`:''}
-          <div style="font-size:13px;color:#F5A25A;letter-spacing:1px;margin-top:4px;font-weight:700;">👑 CAPITAL STATEMENT / पूंजी निवेश-निकासी स्टेटमेंट</div>
+          <div style="font-size:13px;color:#F5A25A;letter-spacing:1px;margin-top:4px;font-weight:700;">👑 CAPITAL ACCOUNT / पूंजी का पूर्ण हिसाब</div>
         </div>
       </div>
 
-      <div style="padding:24px 34px 6px;display:flex;justify-content:space-between;font-size:13px;">
+      <div style="padding:20px 34px 8px;display:flex;justify-content:space-between;font-size:13px;">
         <div>
-          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">अवधि</div>
+          <div style="font-size:11px;color:#999;margin-bottom:4px;">अवधि</div>
           <div style="font-size:15px;font-weight:700;color:#145A32;">${escapeHtml(data.periodLabel)}</div>
         </div>
         <div style="text-align:right;">
           <div><span style="color:#999;">बनाई गई दिनांक:</span> <b>${genDate}</b></div>
-          <div><span style="color:#999;">कुल एंट्री:</span> <b>${data.history.length}</b></div>
+          <div><span style="color:#999;">पूंजी एंट्री:</span> <b>${data.history.length}</b></div>
+        </div>
+      </div>
+
+      <div style="padding:10px 30px 0;display:flex;flex-wrap:wrap;gap:8px;">
+        <div style="flex:1;min-width:210px;background:#EAF6EE;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;color:#666;">कुल पूंजी निवेश</div>
+          <div style="font-size:19px;font-weight:800;color:#145A32;">${fmtMoney(data.totalInvest||0)}</div>
+        </div>
+        <div style="flex:1;min-width:210px;background:#FDECE7;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;color:#666;">कुल पूंजी निकासी</div>
+          <div style="font-size:19px;font-weight:800;color:#B3402A;">${fmtMoney(data.totalWithdraw||0)}</div>
+        </div>
+        <div style="flex:1;min-width:210px;background:#FDEEDF;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;color:#666;">कुल लाभ / हानि</div>
+          <div style="font-size:19px;font-weight:800;color:${(data.totalProfit||0)>=0?'#145A32':'#B3402A'};">${fmtMoney(data.totalProfit||0)}</div>
+        </div>
+        <div style="flex:1;min-width:210px;background:#EEF3F8;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;color:#666;">शुद्ध पूंजी</div>
+          <div style="font-size:19px;font-weight:800;color:#145A32;">${fmtMoney(data.netCapital||0)}</div>
         </div>
       </div>
 
       <div style="padding:16px 34px 0;">
+        <div style="font-size:15px;font-weight:800;color:#145A32;margin-bottom:8px;">1. पूंजी निवेश / निकासी की पूरी हिस्ट्री</div>
         <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
-          <thead>
-            <tr style="background:#FDEEDF;">
-              <th style="padding:10px;text-align:center;width:32px;color:#145A32;">S.No</th>
-              <th style="padding:10px;text-align:left;width:80px;color:#145A32;">दिनांक</th>
-              <th style="padding:10px;text-align:left;color:#145A32;">विवरण</th>
-              <th style="padding:10px;text-align:right;width:100px;color:#145A32;">निवेश (+)</th>
-              <th style="padding:10px;text-align:right;width:100px;color:#145A32;">निकासी (−)</th>
-            </tr>
-          </thead>
+          <thead><tr style="background:#FDEEDF;">
+            <th style="padding:10px;text-align:center;width:32px;color:#145A32;">S.No</th>
+            <th style="padding:10px;text-align:left;width:80px;color:#145A32;">दिनांक</th>
+            <th style="padding:10px;text-align:left;color:#145A32;">विवरण</th>
+            <th style="padding:10px;text-align:right;width:105px;color:#145A32;">निवेश (+)</th>
+            <th style="padding:10px;text-align:right;width:105px;color:#145A32;">निकासी (−)</th>
+          </tr></thead>
           <tbody>${rowsHtml}</tbody>
-          <tfoot>
-            <tr>
-              <td colspan="3" style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#0B3D24;border-top:2px solid #E8720C;">कुल (Total)</td>
-              <td style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#145A32;border-top:2px solid #E8720C;">${fmtMoney(data.periodInvest)}</td>
-              <td style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#D9670C;border-top:2px solid #E8720C;">${fmtMoney(data.periodWithdraw)}</td>
-            </tr>
-          </tfoot>
+          <tfoot><tr>
+            <td colspan="3" style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;border-top:2px solid #E8720C;">इस अवधि का कुल</td>
+            <td style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;color:#145A32;border-top:2px solid #E8720C;">${fmtMoney(data.periodInvest||0)}</td>
+            <td style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;color:#D9670C;border-top:2px solid #E8720C;">${fmtMoney(data.periodWithdraw||0)}</td>
+          </tr></tfoot>
         </table>
       </div>
 
-      <div style="margin:18px 34px 0;padding:14px 18px;border-radius:10px;background:#FDEEDF;display:flex;justify-content:space-between;align-items:center;">
-        <div style="font-size:14px;font-weight:700;color:#145A32;">शुद्ध (निवेश − निकासी)</div>
-        <div style="font-size:17px;font-weight:800;color:#145A32;">${fmtMoney(data.periodInvest - data.periodWithdraw)}</div>
+      <div style="padding:18px 34px 0;">
+        <div style="font-size:15px;font-weight:800;color:#145A32;margin-bottom:8px;">2. निकाली गई पूंजी से व्यक्तिगत / घर खर्च</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+          <thead><tr style="background:#FDECE7;">
+            <th style="padding:10px;text-align:center;width:32px;color:#B3402A;">S.No</th>
+            <th style="padding:10px;text-align:left;width:90px;color:#B3402A;">दिनांक</th>
+            <th style="padding:10px;text-align:left;color:#B3402A;">विवरण</th>
+            <th style="padding:10px;text-align:right;width:120px;color:#B3402A;">खर्च (−)</th>
+          </tr></thead>
+          <tbody>${personalRowsHtml}</tbody>
+          <tfoot><tr>
+            <td colspan="3" style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;border-top:2px solid #D9670C;">इस अवधि का व्यक्तिगत खर्च</td>
+            <td style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;color:#B3402A;border-top:2px solid #D9670C;">${fmtMoney(data.periodPersonalSpent||0)}</td>
+          </tr></tfoot>
+        </table>
       </div>
 
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:30px 34px 20px;">
-        <div style="font-size:11.5px;color:#999;line-height:1.6;">यह कंप्यूटर जनित स्टेटमेंट है।</div>
-        <div style="text-align:center;">
-          <div style="border-top:1px solid #999;padding-top:6px;width:160px;font-size:11.5px;color:#666;">अधिकृत हस्ताक्षर</div>
+      <div style="margin:18px 34px 0;padding:14px 18px;border-radius:10px;background:#FDEEDF;">
+        <div style="font-size:15px;font-weight:800;color:#145A32;margin-bottom:8px;">3. कुल पूंजी स्थिति</div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>कुल निवेश</span><b style="color:#145A32;">${fmtMoney(data.totalInvest||0)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>कुल निकासी</span><b style="color:#B3402A;">${fmtMoney(data.totalWithdraw||0)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>कुल घर/व्यक्तिगत खर्च</span><b style="color:#B3402A;">${fmtMoney(data.totalPersonalSpent||0)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid #E2C6A9;margin-top:4px;"><span style="font-weight:800;">निकासी में से बची व्यक्तिगत नकदी</span><b style="color:#145A32;">${fmtMoney(data.cashInHand||0)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid #E2C6A9;margin-top:4px;"><span style="font-weight:800;">शुद्ध पूंजी (निवेश − प्रारंभिक निकासी + लाभ)</span><b style="color:#145A32;">${fmtMoney(data.netCapital||0)}</b></div>
+      </div>
+
+      <div style="padding:18px 34px 0;">
+        <div style="font-size:15px;font-weight:800;color:#145A32;margin-bottom:8px;">4. वर्तमान वित्तीय स्थिति</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <div style="flex:1;min-width:200px;border:1px solid #eee;border-radius:8px;padding:10px;">नकद: <b>${fmtMoney(data.totalCashBoth||0)}</b></div>
+          <div style="flex:1;min-width:200px;border:1px solid #eee;border-radius:8px;padding:10px;">बैंक: <b>${fmtMoney(data.totalBankBoth||0)}</b></div>
+          <div style="flex:1;min-width:200px;border:1px solid #eee;border-radius:8px;padding:10px;">क्रेडिट कार्ड बकाया: <b>${fmtMoney(data.totalCardBoth||0)}</b></div>
         </div>
       </div>
 
-      <div style="background:#FDEEDF;text-align:center;padding:10px;font-size:11px;color:#145A32;font-weight:700;letter-spacing:0.5px;">
-        ⚡ Powered by Dongare Mobile Bhainsdehi
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:30px 34px 20px;">
+        <div style="font-size:11.5px;color:#999;line-height:1.6;">यह कंप्यूटर जनित पूंजी रिपोर्ट है।<br>निवेश, निकासी और व्यक्तिगत खर्च अलग-अलग दिखाए गए हैं।</div>
+        <div style="text-align:center;"><div style="border-top:1px solid #999;padding-top:6px;width:160px;font-size:11.5px;color:#666;">अधिकृत हस्ताक्षर</div></div>
       </div>
-    </div>
-  `;
+      <div style="background:#FDEEDF;text-align:center;padding:10px;font-size:11px;color:#145A32;font-weight:700;letter-spacing:0.5px;">⚡ Powered by Dongare Mobile Bhainsdehi</div>
+    </div>`;
   document.body.appendChild(container);
-
-  const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff'});
+  const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff', useCORS:true});
   document.body.removeChild(container);
   const pdf = new window.jspdf.jsPDF({unit:'pt', format:'a4'});
   addCanvasPagesToPdf(pdf, canvas, 24);
