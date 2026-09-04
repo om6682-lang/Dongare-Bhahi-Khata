@@ -465,21 +465,19 @@ async function saveOwnerCapital(){
 }
 
 function emptyShopData(){
-  return { transactions: [], stock: [], opening: { cash: 0, bank: 0, card: 0, profit: 0, parties: {}, capitalInvest: 0, capitalWithdraw: 0, stockValue: 0, gstPayable: 0 }, partyInfo: {}, shopInfo: { address: '', gstNo: '', manualStockValue: 0 } };
+  return { transactions: [], stock: [], opening: { cash: 0, bank: 0, card: 0, profit: 0, parties: {}, capitalInvest: 0, capitalWithdraw: 0 }, partyInfo: {}, shopInfo: { address: '', gstNo: '', manualStockValue: 0 } };
 }
 function normalizeShopData(d){
   if(!d || typeof d !== 'object') d = {};
   if(!Array.isArray(d.transactions)) d.transactions = [];
   if(!Array.isArray(d.stock)) d.stock = [];
-  if(!d.opening || typeof d.opening !== 'object') d.opening = {cash:0, bank:0, card:0, profit:0, parties:{}, capitalInvest:0, capitalWithdraw:0, stockValue:0, gstPayable:0};
+  if(!d.opening || typeof d.opening !== 'object') d.opening = {cash:0, bank:0, card:0, profit:0, parties:{}, capitalInvest:0, capitalWithdraw:0};
   if(typeof d.opening.cash !== 'number' || isNaN(d.opening.cash)) d.opening.cash = 0;
   if(typeof d.opening.bank !== 'number' || isNaN(d.opening.bank)) d.opening.bank = 0;
   if(typeof d.opening.card !== 'number' || isNaN(d.opening.card)) d.opening.card = 0;
   if(typeof d.opening.profit !== 'number' || isNaN(d.opening.profit)) d.opening.profit = 0;
   if(typeof d.opening.capitalInvest !== 'number' || isNaN(d.opening.capitalInvest)) d.opening.capitalInvest = 0;
   if(typeof d.opening.capitalWithdraw !== 'number' || isNaN(d.opening.capitalWithdraw)) d.opening.capitalWithdraw = 0;
-  if(typeof d.opening.stockValue !== 'number' || isNaN(d.opening.stockValue)) d.opening.stockValue = 0;
-  if(typeof d.opening.gstPayable !== 'number' || isNaN(d.opening.gstPayable)) d.opening.gstPayable = 0;
   if(!d.opening.parties || typeof d.opening.parties !== 'object') d.opening.parties = {};
   if(!d.partyInfo || typeof d.partyInfo !== 'object') d.partyInfo = {};
   if(!d.shopInfo || typeof d.shopInfo !== 'object') d.shopInfo = { address: '', gstNo: '', manualStockValue: 0 };
@@ -487,26 +485,7 @@ function normalizeShopData(d){
   if(typeof d.shopInfo.gstNo !== 'string') d.shopInfo.gstNo = '';
   if(typeof d.shopInfo.manualStockValue !== 'number' || isNaN(d.shopInfo.manualStockValue)) d.shopInfo.manualStockValue = 0;
   if(typeof d.shopInfo.manualStockValueDate !== 'string') d.shopInfo.manualStockValueDate = '';
-  // पुराने/मौजूदा Firebase data में opening balances पहले से saved हों तो भी
-  // load होते समय opening equity को तुरंत balance करें; केवल Settings save करने पर निर्भर न रहें।
-  try{ reconcileOpeningCapitalDataOnly(d); }catch(e){ console.warn('opening reconcile skipped', e); }
   return d;
-}
-
-function reconcileOpeningCapitalDataOnly(d){
-  if(!d || !d.opening) return 0;
-  const o=d.opening;
-  let debtors=0, creditors=0;
-  Object.values(o.parties||{}).forEach(info=>{
-    const amt=Number(info?.amount)||0;
-    if(info?.type==='debtor') debtors+=amt;
-    else if(info?.type==='creditor') creditors+=amt;
-  });
-  const assets=(Number(o.cash)||0)+(Number(o.bank)||0)+(Number(o.stockValue)||0)+debtors;
-  const liabilities=creditors+(Number(o.card)||0)+(Number(o.gstPayable)||0);
-  const equity=assets-liabilities;
-  o.capitalInvest=equity+(Number(o.capitalWithdraw)||0)-(Number(o.profit)||0);
-  return equity;
 }
 
 function todayStr(){
@@ -547,13 +526,14 @@ function currentTx(){ return state.data[state.shop].transactions; }
 function currentStock(){ return state.data[state.shop].stock; }
 
 function computeTotals(list){
-  let cash=0, bank=0, card=0, profit=0, gstPayable=0;
-  let totalSaleAmt=0, totalCostAmt=0, totalPurchaseAmt=0, totalExpenseAmt=0;
-  let totalCapitalInvest=0, totalCapitalWithdraw=0, totalCreditorScheme=0;
+  let cash=0, bank=0, card=0, profit=0, totalSaleAmt=0, totalCostAmt=0, totalPurchaseAmt=0, totalExpenseAmt=0;
+  let totalCapitalInvest=0, totalCapitalWithdraw=0;
   const debtors={}, creditors={};
   list.forEach(t=>{
-    const amt = Number(t.amount)||0;
-    const cost = Number(t.cost)||0;
+    const meta = TYPE_META[t.type];
+    if(!meta) return;
+    const amt = t.amount || 0;
+    const cost = t.cost || 0;
     const mode = t.paymentMode || 'cash';
     if(t.type==='sale_cash'){
       if(mode==='bank') bank += amt; else cash += amt;
@@ -564,13 +544,14 @@ function computeTotals(list){
       profit += (amt - cost);
       totalSaleAmt += amt; totalCostAmt += cost;
     } else if(t.type==='purchase_cash'){
+      // कार्ड से सीधे वस्तु/माल का भुगतान: कैश/बैंक पर असर नहीं, कार्ड पर बकाया बढ़ेगा
       if(mode==='card') card += amt;
       else if(mode==='bank') bank -= amt; else cash -= amt;
       totalPurchaseAmt += amt;
     } else if(t.type==='purchase_credit'){
-      creditors[t.party] = (creditors[t.party]||0) + amt;
-      totalPurchaseAmt += amt;
+      creditors[t.party] = (creditors[t.party]||0) + amt; totalPurchaseAmt += amt;
     } else if(t.type==='expense'){
+      // कार्ड से सीधे खर्च का भुगतान: कैश/बैंक पर असर नहीं, कार्ड पर बकाया बढ़ेगा
       if(mode==='card') card += amt;
       else if(mode==='bank') bank -= amt; else cash -= amt;
       profit -= amt; totalExpenseAmt += amt;
@@ -578,22 +559,21 @@ function computeTotals(list){
       if(mode==='bank') bank += amt; else cash += amt;
       debtors[t.party] = (debtors[t.party]||0) - amt;
     } else if(t.type==='pay_due'){
+      // लेनदार (व्यापारी) को सीधे कार्ड से भुगतान: कैश/बैंक पर असर नहीं, कार्ड पर बकाया बढ़ेगा,
+      // व्यापारी का हिसाब चुक जाएगा
       if(mode==='card') card += amt;
       else if(mode==='bank') bank -= amt; else cash -= amt;
       creditors[t.party] = (creditors[t.party]||0) - amt;
     } else if(t.type==='credit_given'){
-      if(mode==='bank') bank -= amt; else cash -= amt;
       debtors[t.party] = (debtors[t.party]||0) + amt;
     } else if(t.type==='capital_invest'){
       if(mode==='bank') bank += amt; else cash += amt;
       totalCapitalInvest += amt;
     } else if(t.type==='capital_withdraw'){
       if(mode==='bank') bank -= amt; else cash -= amt;
-      totalCapitalWithdraw += amt;
+      profit -= amt; totalCapitalWithdraw += amt;
     } else if(t.type==='creditor_scheme'){
       creditors[t.party] = (creditors[t.party]||0) - amt;
-      profit += amt;
-      totalCreditorScheme += amt;
     } else if(t.type==='bank_deposit'){
       cash -= amt; bank += amt;
     } else if(t.type==='bank_withdraw'){
@@ -601,32 +581,29 @@ function computeTotals(list){
     } else if(t.type==='capital_invest_stock'){
       totalCapitalInvest += amt;
     } else if(t.type==='card_withdraw'){
+      // क्रेडिट कार्ड से निकासी (कैश एडवांस): पैसा कैश/बैंक में आया, कार्ड पर बकाया उतना ही बढ़ा
       if(mode==='bank') bank += amt; else cash += amt;
       card += amt;
     } else if(t.type==='card_payment'){
+      // कार्ड का बिल कैश/बैंक से चुकाया: कैश/बैंक घटा, कार्ड पर बकाया उतना ही घटा
       if(mode==='bank') bank -= amt; else cash -= amt;
       card -= amt;
     } else if(t.type==='shop_transfer_give'){
+      // दूसरी दुकान को पैसा दिया: अपनी कैश/बैंक घटी, दूसरी दुकान इस दुकान की "देनदार" बनी
       if(mode==='bank') bank -= amt; else cash -= amt;
       debtors[t.party] = (debtors[t.party]||0) + amt;
     } else if(t.type==='shop_transfer_take'){
+      // दूसरी दुकान से पैसा मिला: अपनी कैश/बैंक बढ़ी, दूसरी दुकान इस दुकान की "लेनदार" बनी
       if(mode==='bank') bank += amt; else cash += amt;
       creditors[t.party] = (creditors[t.party]||0) + amt;
-    } else if(t.type==='gst_output'){
-      // GST collected from customer is NOT income/profit; it is a liability.
-      if(t.party) debtors[t.party] = (debtors[t.party]||0) + amt;
-      else if(mode==='bank') bank += amt; else cash += amt;
-      gstPayable += amt;
     }
   });
-  return {cash, bank, card, profit, gstPayable, debtors, creditors,
-    totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt,
-    totalCapitalInvest, totalCapitalWithdraw, totalCreditorScheme};
+  return {cash, bank, card, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
 }
 
 function computeCumulative(shopId, asOfDate){
   shopId = shopId || state.shop;
-  const opening = state.data[shopId].opening || {cash:0, bank:0, card:0, profit:0, parties:{}, stockValue:0, gstPayable:0};
+  const opening = state.data[shopId].opening || {cash:0, bank:0, card:0, profit:0, parties:{}};
   const txList = asOfDate ? state.data[shopId].transactions.filter(t=>t.date<=asOfDate) : state.data[shopId].transactions;
   const base = computeTotals(txList);
   const debtors = Object.assign({}, base.debtors);
@@ -643,7 +620,6 @@ function computeCumulative(shopId, asOfDate){
     bank: base.bank + (Number(opening.bank)||0),
     card: base.card + (Number(opening.card)||0),
     profit: base.profit + (Number(opening.profit)||0),
-    gstPayable: base.gstPayable + (Number(opening.gstPayable)||0),
     totalCapitalInvest: base.totalCapitalInvest + (Number(opening.capitalInvest)||0),
     totalCapitalWithdraw: base.totalCapitalWithdraw + (Number(opening.capitalWithdraw)||0),
     debtors, creditors
@@ -652,42 +628,20 @@ function computeCumulative(shopId, asOfDate){
 
 // जो दुकान हर आइटम अलग ट्रैक नहीं करती, उसकी अनुमानित स्टॉक वैल्यू —
 // आख़िरी बार सेव किए गए बेस के बाद हुई (बिना स्टॉक-लिंक वाली) खरीद/बिक्री एंट्री से अपने-आप बढ़ती-घटती है
-function computeManualStockValue(shopId, asOfDate){
+function computeManualStockValue(shopId){
   const shopInfo = state.data[shopId].shopInfo || {};
   const base = Number(shopInfo.manualStockValue) || 0;
   const sinceDate = shopInfo.manualStockValueDate || '';
   let movement = 0;
   state.data[shopId].transactions.forEach(t=>{
     if(sinceDate && !(t.date > sinceDate)) return;
-    if(asOfDate && t.date > asOfDate) return;
     if((t.type==='purchase_cash' || t.type==='purchase_credit') && !t.stockLinked){
-      movement += Number(t.amount)||0;
+      movement += t.amount;
     } else if((t.type==='sale_cash' || t.type==='sale_credit') && !t.stockRestore){
-      movement -= Number(t.cost)||0;
+      movement -= (t.cost||0);
     }
   });
-  return Math.max(0, base + movement);
-}
-
-function computeTrackedStockValueAsOf(shopId, asOfDate){
-  const data = state.data[shopId];
-  const openingStock = Number((data.opening||{}).stockValue)||0;
-  const list = asOfDate ? data.transactions.filter(t=>t.date<=asOfDate) : data.transactions;
-  let value = openingStock;
-  list.forEach(t=>{
-    if((t.type==='purchase_cash' || t.type==='purchase_credit') && t.stockLinked) value += Number(t.amount)||0;
-    else if(t.type==='capital_invest_stock') value += Number(t.amount)||0;
-    else if((t.type==='sale_cash' || t.type==='sale_credit') && t.stockRestore) value -= Number(t.cost)||0;
-  });
-  return Math.max(0,value);
-}
-
-function computeStockValue(shopId, asOfDate){
-  if(!asOfDate){
-    const stock = state.data[shopId].stock || [];
-    return stock.reduce((s,it)=>s+(Number(it.costPrice)||0)*(Number(it.qty)||0),0) + computeManualStockValue(shopId);
-  }
-  return computeTrackedStockValueAsOf(shopId, asOfDate) + computeManualStockValue(shopId, asOfDate);
+  return base + movement;
 }
 
 function render(){
@@ -1197,9 +1151,7 @@ async function generateInvoice(){
   const afterDiscount = total - discount;
   const gstAmount = gstPercent ? Math.round(afterDiscount*gstPercent/100) : 0;
   const grandTotal = afterDiscount + gstAmount;
-  const discountAdjustment = -discount;
-  const gstAmountForLedger = gstAmount;
-  const invoiceSaleIds = [];
+  const adjustment = grandTotal - total;
 
   const stock = currentStock();
   items.forEach(it=>{
@@ -1207,12 +1159,12 @@ async function generateInvoice(){
       id:uid(), ts:Date.now(),
       type: mode==='credit' ? 'sale_credit' : 'sale_cash',
       amount: it.qty*it.price, cost: it.qty*(it.cost||0),
-      date: state.date, party: mode==='credit' ? customer : '', note: it.name+(it.qty>1?(' x'+it.qty):''), invoiceNo
+      date: state.date, party: mode==='credit' ? customer : '', note: it.name+(it.qty>1?(' x'+it.qty):'')
     };
     if(it.stockId){
       const stockIt = stock.find(s=>s.id===it.stockId);
       if(stockIt){
-        tx.stockRestore = { id: stockIt.id, name: stockIt.name, company: stockIt.company||'', costPrice: stockIt.costPrice, sellPrice: stockIt.sellPrice||null, phoneType: stockIt.phoneType||'android', imei: stockIt.imei||'', barcode: stockIt.barcode||'', note: stockIt.note||'', qtyUsed: it.qty, purchaseTxId: stockIt.purchaseTxId||'' };
+        tx.stockRestore = { id: stockIt.id, name: stockIt.name, company: stockIt.company||'', costPrice: stockIt.costPrice, sellPrice: stockIt.sellPrice||null, phoneType: stockIt.phoneType||'android', imei: stockIt.imei||'', barcode: stockIt.barcode||'', note: stockIt.note||'', qtyUsed: it.qty };
         stockIt.qty -= it.qty;
         if(stockIt.qty<=0){
           const idx = stock.findIndex(s=>s.id===it.stockId);
@@ -1221,21 +1173,13 @@ async function generateInvoice(){
       }
     }
     currentTx().push(tx);
-    invoiceSaleIds.push(tx.id);
   });
-  if(discountAdjustment !== 0){
+  if(adjustment !== 0){
     currentTx().push({
       id:uid(), ts:Date.now(),
       type: mode==='credit' ? 'sale_credit' : 'sale_cash',
-      amount: discountAdjustment, cost: 0,
-      date: state.date, party: mode==='credit' ? customer : '', note: 'बिल छूट (Discount)', invoiceNo
-    });
-  }
-  if(gstAmountForLedger > 0){
-    currentTx().push({
-      id:uid(), ts:Date.now(), type:'gst_output', amount:gstAmountForLedger, cost:0,
-      date:state.date, party:mode==='credit' ? customer : '', paymentMode: mode==='credit' ? 'credit' : mode,
-      note:'आउटपुट GST — बिल '+invoiceNo, invoiceNo, linkedTxIds: invoiceSaleIds.slice()
+      amount: adjustment, cost: 0,
+      date: state.date, party: mode==='credit' ? customer : '', note: 'छूट/GST समायोजन'
     });
   }
   await saveShop(state.shop);
@@ -2702,8 +2646,7 @@ function generatePNL(){
   const list = currentTx().filter(t=>t.date>=from && t.date<=to);
   const tot = computeTotals(list);
   const grossProfit = tot.totalSaleAmt - tot.totalCostAmt;
-  const schemeIncome = Number(tot.totalCreditorScheme)||0;
-  const netProfit = grossProfit + schemeIncome - tot.totalExpenseAmt;
+  const netProfit = grossProfit - tot.totalExpenseAmt;
   const shopName = SHOPS.find(s=>s.id===state.shop).name;
 
   state.lastPnlText = buildPnlShareText(shopName, from, to, tot, grossProfit, netProfit);
@@ -2719,7 +2662,6 @@ function generatePNL(){
   <div class="card">
     <h2>लाभ-हानि खाता (Profit &amp; Loss Account)</h2>
     <div class="party-row"><span class="pname">क्रेडिट (Cr) — सकल लाभ (ऊपर से)</span><span class="${grossProfit>=0?'pos':'neg'}">${fmtMoney(grossProfit)}</span></div>
-    <div class="party-row"><span class="pname">क्रेडिट (Cr) — सप्लायर स्कीम/डिस्काउंट आय</span><span class="pos">${fmtMoney(schemeIncome)}</span></div>
     <div class="party-row"><span class="pname">डेबिट (Dr) — दुकान खर्च (व्यय)</span><span class="neg">${fmtMoney(tot.totalExpenseAmt)}</span></div>
     <div class="total-line"><span>शुद्ध लाभ/हानि (Net Profit/Loss)</span><span class="${netProfit>=0?'pos':'neg'}" style="font-size:18px;">${fmtMoney(netProfit)}</span></div>
   </div>
@@ -2737,7 +2679,6 @@ function buildPnlShareText(shopName, from, to, tot, grossProfit, netProfit){
   text += `सकल लाभ/हानि: ${fmtMoney(grossProfit)}\n\n`;
   text += `लाभ-हानि खाता (P&L Account):\n`;
   text += `Cr सकल लाभ: ${fmtMoney(grossProfit)}\n`;
-  text += `Cr सप्लायर स्कीम/डिस्काउंट आय: ${fmtMoney(Number(tot.totalCreditorScheme)||0)}\n`;
   text += `Dr दुकान खर्च: ${fmtMoney(tot.totalExpenseAmt)}\n`;
   text += `शुद्ध लाभ/हानि: ${fmtMoney(netProfit)}\n\n`;
   text += `— डोंगरे बही-खाता`;
@@ -2820,58 +2761,112 @@ function generateComparison(kind){
 
 // ---------- बैलेंस शीट (Assets = Liabilities + Capital) ----------
 
+
+function getBalanceAssetBreakdown(shopId, asOfDate){
+  const d = state.data[shopId];
+  const shopInfo = d.shopInfo || {};
+  const baseDate = shopInfo.manualStockValueDate || '';
+  let untracked = (!asOfDate || !baseDate || baseDate <= asOfDate) ? (Number(shopInfo.manualStockValue)||0) : 0;
+
+  // 1) बिना स्टॉक लिंक वाली खरीद = अलग "बिना स्टॉक वाली खरीद/माल" Asset
+  //    यह Cash/Bank घटने या Creditor बढ़ने के सामने asset बनेगा।
+  const txs = asOfDate ? d.transactions.filter(t=>t.date<=asOfDate) : d.transactions;
+  txs.forEach(t=>{
+    if((t.type==='purchase_cash'||t.type==='purchase_credit') && !t.stockLinked){
+      untracked += Number(t.amount)||0;
+    } else if((t.type==='sale_cash'||t.type==='sale_credit') && !t.stockRestore){
+      // बिना stock-link वाली बिक्री में दी गई लागत को untracked asset से घटाएं।
+      untracked -= Number(t.cost)||0;
+    }
+  });
+
+  // 2) आइटम-wise Stock = अलग "स्टॉक (लागत मूल्य)" Asset
+  //    आज की स्थिति में current stock array ही authoritative है।
+  let tracked = 0;
+  if(!asOfDate){
+    tracked = d.stock.reduce((sum,it)=>sum+(Number(it.costPrice)||0)*(Number(it.qty)||0),0);
+  } else {
+    // पुराने as-of के लिए additions और stock-linked sales का reconstruction।
+    const additions = {};
+    txs.forEach(t=>{
+      if(Array.isArray(t.stockAddedIds) &&
+         (t.type==='purchase_cash'||t.type==='purchase_credit'||t.type==='capital_invest_stock')){
+        t.stockAddedIds.forEach(id=>{ additions[id]=true; });
+      }
+    });
+    // Current stock में मौजूद item का cost; sold item की लागत sale transaction में stockRestore में मिलती है।
+    d.stock.forEach(it=>{
+      if(additions[it.id]) tracked += (Number(it.costPrice)||0)*(Number(it.qty)||0);
+    });
+    txs.forEach(t=>{
+      if((t.type==='sale_cash'||t.type==='sale_credit') && t.stockRestore){
+        // इस sale के समय stock घटा था, इसलिए as-of के पहले sale को tracked stock से घटाएं।
+        tracked -= (Number(t.stockRestore.costPrice)||0) * (Number(t.stockRestore.qtyUsed)||1);
+      }
+    });
+    if(tracked < 0 && Math.abs(tracked)<1) tracked=0;
+  }
+
+  return {trackedStock: tracked, untrackedPurchase: untracked, total: tracked + untracked};
+}
+
+// पुराने नाम को अन्य रिपोर्ट/कोड के लिए सुरक्षित रखते हुए कुल Asset value लौटाएं।
+function getBalanceStockValue(shopId, asOfDate){
+  return getBalanceAssetBreakdown(shopId, asOfDate).total;
+}
+
 function sectionBalanceSheet(){
   const asOf = state.bsAsOfDate || null;
   const perShop = SHOPS.map(s=>({
-    id: s.id, name: s.name,
-    cum: computeCumulative(s.id, asOf),
-    stock: state.data[s.id].stock
+    id:s.id, name:s.name,
+    cum:computeCumulative(s.id, asOf),
+    stock:state.data[s.id].stock
   }));
   const multiShop = SHOPS.length > 1;
   const bothWord = multiShop ? 'सभी दुकानों' : SHOPS[0].name;
+  const asOfLabel = asOf ? fmtDate(asOf) : 'आज';
 
   const totalCash = perShop.reduce((s,p)=>s+p.cum.cash,0);
   const totalBank = perShop.reduce((s,p)=>s+p.cum.bank,0);
   const totalCard = perShop.reduce((s,p)=>s+p.cum.card,0);
-  const totalGstPayable = perShop.reduce((s,p)=>s+(p.cum.gstPayable||0),0);
-  // स्टॉक को दो अलग हिस्सों में दिखाएँ:
-  // 1) स्टॉक टैब में ट्रैक होने वाला वास्तविक स्टॉक
-  // 2) बिना स्टॉक-लिंक वाली खरीद से बनी Asset वैल्यू
-  const totalTrackedStockValue = perShop.reduce((s,p)=>{
-    if(asOf) return s + computeTrackedStockValueAsOf(p.id, asOf);
-    const stock = state.data[p.id].stock || [];
-    return s + stock.reduce((x,it)=>x+(Number(it.costPrice)||0)*(Number(it.qty)||0),0);
-  },0);
-  const totalNonStockPurchaseAsset = perShop.reduce((s,p)=>s+computeManualStockValue(p.id, asOf),0);
-  const totalStockValue = totalTrackedStockValue + totalNonStockPurchaseAsset;
-  const totalDebtors = perShop.reduce((s,p)=>{
-    const d = Object.values(p.cum.debtors).filter(v=>v>0.5).reduce((a,b)=>a+b,0);
-    return s+d;
-  },0);
-  const totalCreditors = perShop.reduce((s,p)=>{
-    const c = Object.values(p.cum.creditors).filter(v=>v>0.5).reduce((a,b)=>a+b,0);
-    return s+c;
-  },0);
+
+  // IMPORTANT:
+  // Actual item-wise stock + manual/untracked stock. For an as-of report,
+  // stock is reconstructed from transactions instead of blindly using
+  // today's physical stock, so a new purchase cannot create a false
+  // balance-sheet difference.
+  const assetBreakdownForShop = p => getBalanceAssetBreakdown(p.id, asOf);
+  const totalTrackedStock = perShop.reduce((s,p)=>s+assetBreakdownForShop(p).trackedStock,0);
+  const totalUntrackedPurchase = perShop.reduce((s,p)=>s+assetBreakdownForShop(p).untrackedPurchase,0);
+  const totalStockValue = totalTrackedStock + totalUntrackedPurchase;
+
+  const totalDebtors = perShop.reduce((s,p)=>
+    s+Object.values(p.cum.debtors||{}).filter(v=>v>0.5).reduce((a,b)=>a+b,0),0);
+
+  const totalCreditors = perShop.reduce((s,p)=>
+    s+Object.values(p.cum.creditors||{}).filter(v=>v>0.5).reduce((a,b)=>a+b,0),0);
 
   const totalProfit = perShop.reduce((s,p)=>s+p.cum.profit,0);
   const totalInvest = perShop.reduce((s,p)=>s+(p.cum.totalCapitalInvest||0),0);
-  const totalCapitalWithdrawAll = perShop.reduce((s,p)=>s+(p.cum.totalCapitalWithdraw||0),0);
-  // Opening stock is already an asset. Do NOT add it again to capital.
-  // Opening capital investment is reconciled from opening assets/liabilities.
-  const netCapital = totalInvest - totalCapitalWithdrawAll + totalProfit;
+  const openingWithdrawSum = perShop.reduce((s,p)=>s+(Number(state.data[p.id].opening.capitalWithdraw)||0),0);
+  const netCapital = totalInvest - openingWithdrawSum + totalProfit;
 
   const totalAssets = totalCash + totalBank + totalStockValue + totalDebtors;
-  const totalLiabCapital = totalCreditors + totalCard + totalGstPayable + netCapital;
+  const totalLiabCapital = totalCreditors + totalCard + netCapital;
   const difference = totalAssets - totalLiabCapital;
-  const isBalanced = Math.abs(difference) < 1;
+  const isBalanced = Math.abs(difference)<1;
 
-  const asOfLabel = asOf ? fmtDate(asOf) : 'आज';
-  state.lastBalanceSheetText = buildBalanceSheetShareText(bothWord, asOfLabel, totalCash, totalBank, totalTrackedStockValue, totalNonStockPurchaseAsset, totalStockValue, totalDebtors, totalCreditors, totalCard, totalGstPayable, netCapital, totalAssets, totalLiabCapital, difference);
+  state.lastBalanceSheetText = buildBalanceSheetShareText(
+    bothWord,asOfLabel,totalCash,totalBank,totalStockValue,totalDebtors,
+    totalCreditors,totalCard,netCapital,totalAssets,totalLiabCapital,difference
+  );
 
   return `
   <div class="card">
     <h2>⚖️ बैलेंस शीट</h2>
-    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">${asOfLabel} तक की कुल संपत्ति (Assets) बनाम देयताएं + पूंजी (Liabilities + Capital) — ${bothWord} मिलाकर।</p>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">
+      ${asOfLabel} तक की कुल संपत्ति (Assets) बनाम देयताएं + पूंजी (Liabilities + Capital) — ${bothWord} मिलाकर।
+    </p>
     <div class="row2">
       <div><label>तारीख तक (खाली छोड़ें = आज तक)</label><input type="date" id="bs_asof" value="${state.bsAsOfDate||''}"></div>
       <div style="display:flex;align-items:flex-end;gap:8px;">
@@ -2879,14 +2874,13 @@ function sectionBalanceSheet(){
         <button class="submit-btn btn-secondary" style="margin:0;" onclick="clearBalanceSheetAsOf()">रीसेट</button>
       </div>
     </div>
-    ${asOf ? `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">नोट: पुरानी तारीख के लिए स्टॉक मूल्य खरीद/बिक्री लेन-देन से पुनर्गणित किया जाता है; शुरुआत का स्टॉक 'Opening Stock' से लिया जाता है।</p>` : ''}
   </div>
   <div class="card">
     <h2>संपत्ति (Assets)</h2>
     <div class="party-row"><span class="pname">नकद (Cash in Hand)</span><span class="pos">${fmtMoney(totalCash)}</span></div>
     <div class="party-row"><span class="pname">🏦 बैंक बैलेंस</span><span class="pos">${fmtMoney(totalBank)}</span></div>
-    <div class="party-row"><span class="pname">📦 स्टॉक (लागत मूल्य पर)</span><span class="pos">${fmtMoney(totalTrackedStockValue)}</span></div>
-    <div class="party-row"><span class="pname">📦 बिना स्टॉक वाली खरीद (Asset)</span><span class="pos">${fmtMoney(totalNonStockPurchaseAsset)}</span></div>
+    <div class="party-row"><span class="pname">📦 स्टॉक (लागत मूल्य पर)</span><span class="pos">${fmtMoney(totalTrackedStock)}</span></div>
+    <div class="party-row"><span class="pname">📦 बिना स्टॉक वाली खरीद (Asset)</span><span class="pos">${fmtMoney(totalUntrackedPurchase)}</span></div>
     <div class="party-row"><span class="pname">सुंदरी देनदार (Sundry Debtors)</span><span class="pos">${fmtMoney(totalDebtors)}</span></div>
     <div class="total-line"><span>कुल संपत्ति (Total Assets)</span><span class="pos" style="font-size:18px;">${fmtMoney(totalAssets)}</span></div>
   </div>
@@ -2894,19 +2888,17 @@ function sectionBalanceSheet(){
     <h2>देयताएं + पूंजी (Liabilities + Capital)</h2>
     <div class="party-row"><span class="pname">सुंदरी लेनदार (Sundry Creditors)</span><span class="neg">${fmtMoney(totalCreditors)}</span></div>
     <div class="party-row"><span class="pname">💳 क्रेडिट कार्ड बकाया</span><span class="neg">${fmtMoney(totalCard)}</span></div>
-    <div class="party-row"><span class="pname">🧾 GST देयता (GST Payable)</span><span class="neg">${fmtMoney(totalGstPayable)}</span></div>
-    <div class="party-row"><span class="pname">👑 मालिक की पूंजी (Owner's Capital)</span><span class="${netCapital>=0?'pos':'neg'}">${fmtMoney(netCapital)}</span></div>
+    <div class="party-row"><span class="pname">👑 मालिक की पूंजी (Owner's Capital)</span><span="${netCapital>=0?'pos':'neg'}">${fmtMoney(netCapital)}</span></div>
     <div class="total-line"><span>कुल देयताएं + पूंजी</span><span style="font-size:18px;">${fmtMoney(totalLiabCapital)}</span></div>
   </div>
   <div class="card">
-    <h2>${isBalanced ? '✅ बैलेंस मिल गया' : '⚠️ थोड़ा अंतर है'}</h2>
+    <h2>${isBalanced?'✅ बैलेंस मिल गया':'⚠️ थोड़ा अंतर है'}</h2>
     <div class="stat balance"><div class="label">Assets − (Liabilities + Capital)</div><div class="val ${isBalanced?'pos':'neg'}">${fmtMoney(difference)}</div></div>
-    ${!isBalanced ? `<p style="font-size:12px;color:var(--ink-soft);margin-top:8px;">छोटा अंतर आना सामान्य है — जैसे अगर कोई बिक्री एंट्री स्टॉक से लिंक किए बिना डाली गई हो (तो स्टॉक अपने-आप नहीं घटा)। बड़ा अंतर दिखे तो एंट्रियाँ एक बार दोबारा जांच लें।</p>` : ''}
+    ${!isBalanced?`<p style="font-size:12px;color:var(--ink-soft);margin-top:8px;">यदि अंतर किसी नई खरीद की राशि के बराबर है, तो उस खरीद में स्टॉक जोड़ते समय भुगतान स्रोत (कैश/क्रेडिट/पूंजी) की एंट्री भी बनी होनी चाहिए।</p>`:''}
   </div>
-  <div class="card">
-    <button class="submit-btn" onclick="shareBalanceSheet()">📤 WhatsApp पर भेजें</button>
-  </div>`;
+  <div class="card"><button class="submit-btn" onclick="shareBalanceSheet()">📤 WhatsApp पर भेजें</button></div>`;
 }
+
 
 function applyBalanceSheetAsOf(){
   const v = document.getElementById('bs_asof').value;
@@ -2918,20 +2910,17 @@ function clearBalanceSheetAsOf(){
   renderSection();
 }
 
-function buildBalanceSheetShareText(bothWord, asOfLabel, cash, bank, trackedStockVal, nonStockPurchaseAsset, stockVal, debtors, creditors, card, gstPayable, capital, totalAssets, totalLiabCapital, difference){
+function buildBalanceSheetShareText(bothWord, asOfLabel, cash, bank, stockVal, debtors, creditors, card, capital, totalAssets, totalLiabCapital, difference){
   let text = `⚖️ ${bothWord} — बैलेंस शीट (${asOfLabel} तक)\n\n`;
   text += `संपत्ति (Assets):\n`;
   text += `नकद: ${fmtMoney(cash)}\n`;
   text += `बैंक: ${fmtMoney(bank)}\n`;
-  text += `स्टॉक (लागत मूल्य): ${fmtMoney(trackedStockVal)}\n`;
-  text += `बिना स्टॉक वाली खरीद (Asset): ${fmtMoney(nonStockPurchaseAsset)}\n`;
-  text += `स्टॉक + बिना स्टॉक वाली खरीद: ${fmtMoney(stockVal)}\n`;
+  text += `स्टॉक: ${fmtMoney(stockVal)}\n`;
   text += `देनदार: ${fmtMoney(debtors)}\n`;
   text += `कुल संपत्ति: ${fmtMoney(totalAssets)}\n\n`;
   text += `देयताएं + पूंजी:\n`;
   text += `लेनदार: ${fmtMoney(creditors)}\n`;
   text += `क्रेडिट कार्ड बकाया: ${fmtMoney(card)}\n`;
-  text += `GST देयता: ${fmtMoney(gstPayable)}\n`;
   text += `मालिक की पूंजी: ${fmtMoney(capital)}\n`;
   text += `कुल: ${fmtMoney(totalLiabCapital)}\n\n`;
   text += `— डोंगरे बही-खाता`;
@@ -2974,10 +2963,9 @@ function sectionTrialBalance(){
     const tag = multiShop ? ` — ${p.name}` : '';
     if(Math.abs(p.cum.cash) > 0.5){ rows.push({label:'नकद (Cash in Hand)'+tag, dr:p.cum.cash>0?p.cum.cash:0, cr:p.cum.cash<0?-p.cum.cash:0}); }
     if(Math.abs(p.cum.bank) > 0.5){ rows.push({label:'🏦 बैंक बैलेंस'+tag, dr:p.cum.bank>0?p.cum.bank:0, cr:p.cum.bank<0?-p.cum.bank:0}); }
-    const trackedStockVal = asOf ? computeTrackedStockValueAsOf(p.id, asOf) : (state.data[p.id].stock||[]).reduce((s,it)=>s+(Number(it.costPrice)||0)*(Number(it.qty)||0),0);
-    const nonStockPurchaseAsset = computeManualStockValue(p.id, asOf);
-    if(Math.abs(trackedStockVal) > 0.5){ rows.push({label:'📦 स्टॉक (लागत मूल्य पर)'+tag, dr:trackedStockVal, cr:0}); }
-    if(Math.abs(nonStockPurchaseAsset) > 0.5){ rows.push({label:'📦 बिना स्टॉक वाली खरीद (Asset)'+tag, dr:nonStockPurchaseAsset, cr:0}); }
+    const assetBreak = getBalanceAssetBreakdown(p.id, asOf);
+    if(Math.abs(assetBreak.trackedStock) > 0.5){ rows.push({label:'📦 स्टॉक (वर्तमान लागत मूल्य पर)'+tag, dr:assetBreak.trackedStock, cr:0}); }
+    if(Math.abs(assetBreak.untrackedPurchase) > 0.5){ rows.push({label:'📦 बिना स्टॉक वाली खरीद (Asset)'+tag, dr:assetBreak.untrackedPurchase, cr:0}); }
     Object.entries(p.cum.debtors).forEach(([name,amt])=>{
       if(amt > 0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:amt, cr:0});
       else if(amt < -0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:0, cr:-amt});
@@ -2987,13 +2975,12 @@ function sectionTrialBalance(){
       else if(amt < -0.5) rows.push({label:escapeHtml(name)+' (लेनदार)'+tag, dr:-amt, cr:0});
     });
     if(Math.abs(p.cum.card) > 0.5) rows.push({label:'💳 क्रेडिट कार्ड बकाया'+tag, dr:0, cr:p.cum.card});
-    if(Math.abs(p.cum.gstPayable||0) > 0.5) rows.push({label:'🧾 GST देयता (GST Payable)'+tag, dr:0, cr:p.cum.gstPayable});
   });
 
   const totalInvest = perShop.reduce((s,p)=>s+(p.cum.totalCapitalInvest||0),0);
-  const totalWithdraw = perShop.reduce((s,p)=>s+(p.cum.totalCapitalWithdraw||0),0);
+  const openingWithdrawSum = perShop.reduce((s,p)=>s+(Number(state.data[p.id].opening.capitalWithdraw)||0),0);
   const totalProfit = perShop.reduce((s,p)=>s+p.cum.profit,0);
-  const netCapital = totalInvest - totalWithdraw + totalProfit;
+  const netCapital = totalInvest - openingWithdrawSum + totalProfit;
   if(netCapital >= 0) rows.push({label:'👑 मालिक की पूंजी (Capital + लाभ)', dr:0, cr:netCapital});
   else rows.push({label:'👑 मालिक की पूंजी (Capital + हानि)', dr:-netCapital, cr:0});
 
@@ -3023,7 +3010,7 @@ function sectionTrialBalance(){
         <button class="submit-btn btn-secondary" style="margin:0;" onclick="clearTrialBalanceAsOf()">रीसेट</button>
       </div>
     </div>
-    ${asOf ? `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">नोट: पुरानी तारीख के लिए स्टॉक मूल्य खरीद/बिक्री लेन-देन से पुनर्गणित किया जाता है; शुरुआत का स्टॉक 'Opening Stock' से लिया जाता है।</p>` : ''}
+    ${asOf ? `<p style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">नोट: स्टॉक की राशि हमेशा वर्तमान मूल्य दिखाती है (पुरानी तारीख के लिए ऐतिहासिक स्टॉक ट्रैक नहीं होता)।</p>` : ''}
   </div>
   <div class="card">
     <div class="party-row" style="font-weight:700;color:var(--maroon-deep);border-bottom:2px solid var(--gold);padding-bottom:8px;">
@@ -3206,13 +3193,13 @@ function sectionCapital(){
 
   const todayProfit = perShop.reduce((s,p)=>s+p.today.profit,0);
   const totalProfit = perShop.reduce((s,p)=>s+p.cum.profit,0);
-  const combinedTradingProfit = perShop.reduce((s,p)=>s+((Number(p.cum.totalSaleAmt)||0)-(Number(p.cum.totalCostAmt)||0)),0);
-  const combinedSchemeIncome = perShop.reduce((s,p)=>s+(Number(p.cum.totalCreditorScheme)||0),0);
-  const combinedExpenses = perShop.reduce((s,p)=>s+(Number(p.cum.totalExpenseAmt)||0),0);
   const totalInvest = perShop.reduce((s,p)=>s+(p.cum.totalCapitalInvest||0),0);
   const totalWithdraw = perShop.reduce((s,p)=>s+(p.cum.totalCapitalWithdraw||0),0);
-  // पूंजी निकासी Profit/Expense नहीं है; इसे Owner's Capital से घटाया जाता है।
-  const netCapital = totalInvest - totalWithdraw + totalProfit;
+  // असली (ट्रांज़ैक्शन वाली) निकासी अब सीधे लाभ (profit) से घट चुकी है (computeTotals में),
+  // इसलिए शुद्ध पूंजी में उसे दोबारा मत घटाओ — सिर्फ़ "शुरूआती" (opening) निकासी घटाओ,
+  // जो सिर्फ़ जानकारी के लिए है और लाभ में शामिल नहीं है।
+  const openingWithdrawSum = perShop.reduce((s,p)=>s+(Number(state.data[p.id].opening.capitalWithdraw)||0),0);
+  const netCapital = totalInvest - openingWithdrawSum + totalProfit;
   const totalCashBoth = perShop.reduce((s,p)=>s+p.cum.cash,0);
   const totalBankBoth = perShop.reduce((s,p)=>s+p.cum.bank,0);
   const totalCardBoth = perShop.reduce((s,p)=>s+p.cum.card,0);
@@ -3244,8 +3231,17 @@ function sectionCapital(){
   const periodHistory = (capFrom || capTo) ? history.filter(h=> (!capFrom || h.date>=capFrom) && (!capTo || h.date<=capTo) ) : history;
   const periodInvest = periodHistory.filter(h=>h.type==='capital_invest').reduce((s,h)=>s+h.amount,0);
   const periodWithdraw = periodHistory.filter(h=>h.type==='capital_withdraw').reduce((s,h)=>s+h.amount,0);
+  const periodPersonalExpenses = personalExpenses.filter(e=>
+    (!capFrom || e.date>=capFrom) && (!capTo || e.date<=capTo)
+  );
+  const periodPersonalSpent = periodPersonalExpenses.reduce((s,e)=>s+(Number(e.amount)||0),0);
   const capPeriodLabel = (capFrom || capTo) ? `${capFrom?fmtDate(capFrom):'शुरू से'} — ${capTo?fmtDate(capTo):'आज तक'}` : 'समस्त इतिहास (All Time)';
-  state.lastCapitalStatement = { history: periodHistory, periodInvest, periodWithdraw, periodLabel: capPeriodLabel, bothWord: multiShop ? shopsLabel : SHOPS[0].name };
+  state.lastCapitalStatement = {
+    history: periodHistory, periodInvest, periodWithdraw, periodPersonalExpenses, periodPersonalSpent,
+    periodLabel: capPeriodLabel, bothWord: multiShop ? shopsLabel : SHOPS[0].name,
+    totalInvest, totalWithdraw, totalProfit, netCapital, totalCashBoth, totalBankBoth, totalCardBoth,
+    totalPersonalSpent, cashInHand, openingWithdrawSum
+  };
 
   const periodHistoryRows = periodHistory.length ? periodHistory.map(h=>`
     <div class="entry">
@@ -3270,37 +3266,14 @@ function sectionCapital(){
     `<div class="stat"><div class="label">${p.name} — आज</div><div class="val ${p.today.profit>=0?'pos':'neg'}">${fmtMoney(p.today.profit)}</div></div>`
   ).join('') : '';
 
-  // हर दुकान का लाभ 3 साफ हिस्सों में दिखाएँ:
-  // 1) केवल खरीद/बिक्री से Trading Profit
-  // 2) सप्लायर स्कीम/डिस्काउंट जैसी अलग आय
-  // 3) अंतिम कुल लाभ (Trading + Other Income - Expenses + Opening Profit)
-  // GST को लाभ में नहीं जोड़ा जाता; वह देयता (GST Payable) है।
-  const perShopCumHtml = multiShop ? perShop.map(p=>{
-    const shopData = state.data[p.id];
-    const openingProfit = Number((shopData.opening||{}).profit)||0;
-    const tradingProfit = (Number(p.cum.totalSaleAmt)||0) - (Number(p.cum.totalCostAmt)||0);
-    const otherIncome = Number(p.cum.totalCreditorScheme)||0;
-    const expenses = Number(p.cum.totalExpenseAmt)||0;
-    const totalProfitForShop = tradingProfit + otherIncome - expenses + openingProfit;
-    const shopWithdraw = Number(p.cum.totalCapitalWithdraw)||0;
-    const availableProfit = totalProfitForShop - shopWithdraw;
-    return `
-      <div class="stat" style="grid-column:span 2;">
-        <div class="label" style="font-weight:800;font-size:16px;">${p.name}</div>
-        <div class="summary-grid" style="margin-top:8px;">
-          <div class="stat"><div class="label">🛒 खरीद/बिक्री से लाभ</div><div class="val ${tradingProfit>=0?'pos':'neg'}">${fmtMoney(tradingProfit)}</div></div>
-          <div class="stat"><div class="label">🎁 स्कीम/अन्य आय</div><div class="val ${otherIncome>=0?'pos':'neg'}">${fmtMoney(otherIncome)}</div></div>
-          <div class="stat balance" style="grid-column:span 2;"><div class="label">कुल लाभ (खर्च घटाकर)</div><div class="val ${totalProfitForShop>=0?'pos':'neg'}" style="font-size:22px;">${fmtMoney(totalProfitForShop)}</div></div>
-        </div>
-        <div class="note" style="margin-top:8px;">दुकान से मालिक की निकासी: <b>${fmtMoney(shopWithdraw)}</b> → निकासी के बाद उपलब्ध लाभ: <b class="${availableProfit>=0?'pos':'neg'}">${fmtMoney(availableProfit)}</b></div>
-        ${expenses>0 ? `<div class="note" style="margin-top:4px;">दुकान खर्च: ${fmtMoney(expenses)}</div>` : ''}
-      </div>`;
-  }).join('') : '';
+  const perShopCumHtml = multiShop ? perShop.map(p=>
+    `<div class="stat"><div class="label">${p.name} कुल लाभ</div><div class="val ${p.cum.profit>=0?'pos':'neg'}">${fmtMoney(p.cum.profit)}</div></div>`
+  ).join('') : '';
 
   return `
   <div class="card">
     <h2>👑 ${OWNER_NAME} — कैपिटल खाता</h2>
-    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 10px;">${multiShop ? ('दोनों दुकानों '+shopsLabel+' का मिलाकर हिसाब') : SHOPS[0].name} — सिर्फ़ मालिक के लिए। जिस दुकान से मालिक निकासी करेगा, उसी दुकान की Cash/Bank तुरंत घटेगी और नीचे उसी दुकान के ‘निकासी के बाद उपलब्ध लाभ’ में भी वह राशि घटकर दिखेगी।</p>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 10px;">${multiShop ? ('दोनों दुकानों '+shopsLabel+' का मिलाकर हिसाब') : SHOPS[0].name} — सिर्फ़ मालिक के लिए</p>
     <div class="summary-grid">
       <div class="stat" style="grid-column:span 2;"><div class="label">आज का कुल लाभ/हानि ${multiShop?'('+bothWord+')':''}</div><div class="val ${todayProfit>=0?'pos':'neg'}" style="font-size:24px;">${fmtMoney(todayProfit)}</div></div>
       ${perShopTodayHtml}
@@ -3310,17 +3283,7 @@ function sectionCapital(){
     <h2>कुल संचित हिसाब (शुरू से अब तक)</h2>
     <div class="summary-grid">
       ${perShopCumHtml}
-      ${multiShop ? `
-      <div class="stat" style="grid-column:span 2;background:var(--card);border-radius:10px;padding:10px;">
-        <div class="label" style="font-weight:800;">📋 ${bothWord} — मिलाकर विस्तार से</div>
-        <div class="summary-grid" style="margin-top:6px;">
-          <div class="stat"><div class="label">🛒 खरीद/बिक्री से लाभ</div><div class="val ${combinedTradingProfit>=0?'pos':'neg'}">${fmtMoney(combinedTradingProfit)}</div></div>
-          <div class="stat"><div class="label">🎁 स्कीम/अन्य आय</div><div class="val ${combinedSchemeIncome>=0?'pos':'neg'}">${fmtMoney(combinedSchemeIncome)}</div></div>
-          <div class="stat" style="grid-column:span 2;"><div class="label">🧾 कुल दुकान खर्च (पेट्रोल, किराया आदि)</div><div class="val neg">${fmtMoney(combinedExpenses)}</div></div>
-        </div>
-      </div>` : ''}
-      <div class="stat balance" style="grid-column:span 2;"><div class="label">कुल लाभ (खर्च घटाकर) ${multiShop?'('+bothWord+')':''}</div><div class="val ${totalProfit>=0?'pos':'neg'}" style="font-size:22px;">${fmtMoney(totalProfit)}</div></div>
-      <div class="note" style="grid-column:span 2;">🧾 नोट: बिक्री पर दिया गया Discount बिक्री लाभ को घटाता है। GST को लाभ नहीं माना गया है; GST देयता अलग रहती है। सप्लायर से मिली Scheme/Discount को अन्य आय में जोड़ा गया है।</div>
+      <div class="stat" style="grid-column:span 2;"><div class="label">कुल लाभ ${multiShop?'('+bothWord+')':''}</div><div class="val ${totalProfit>=0?'pos':'neg'}" style="font-size:22px;">${fmtMoney(totalProfit)}</div></div>
       <div class="stat balance" style="grid-column:span 2;"><div class="label">${multiShop?(bothWord+' का '):''}कुल नकद सिल्लक</div><div class="val">${fmtMoney(totalCashBoth)}</div></div>
       <div class="stat balance" style="grid-column:span 2;"><div class="label">🏦 ${multiShop?(bothWord+' का '):''}कुल बैंक बैलेंस</div><div class="val">${fmtMoney(totalBankBoth)}</div></div>
       <div class="stat balance" style="grid-column:span 2;"><div class="label">💳 ${multiShop?(bothWord+' का '):''}क्रेडिट कार्ड बकाया</div><div class="val ${totalCardBoth>0?'neg':''}">${fmtMoney(totalCardBoth)}</div></div>
@@ -3402,6 +3365,15 @@ async function buildCapitalStatementPdfBlob(data){
   const logoSrc = (document.querySelector('header img') || {}).src || '';
   const genDate = fmtDate(todayStr());
 
+  const personal = data.periodPersonalExpenses || [];
+  const personalRowsHtml = personal.length ? personal.map((e,idx)=>`
+    <tr>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;">${fmtDate(e.date)}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;">घर/व्यक्तिगत खर्च${e.note?('<br><span style="color:#999;font-size:11px;">'+escapeHtml(e.note)+'</span>'):''}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#B3402A;font-weight:600;">${fmtMoney(e.amount)}</td>
+    </tr>`).join('') : `<tr><td colspan="4" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई व्यक्तिगत/घर खर्च नहीं है</td></tr>`;
+
   const rowsHtml = data.history.length ? data.history.map((h,idx)=>`
     <tr>
       <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
@@ -3409,80 +3381,118 @@ async function buildCapitalStatementPdfBlob(data){
       <td style="padding:8px 10px;border-bottom:1px solid #eee;">${escapeHtml(h.shopName)}${h.note?('<br><span style="color:#999;font-size:11px;">'+escapeHtml(h.note)+'</span>'):''}</td>
       <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#145A32;font-weight:600;">${h.type==='capital_invest'?fmtMoney(h.amount):''}</td>
       <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;color:#D9670C;font-weight:600;">${h.type==='capital_withdraw'?fmtMoney(h.amount):''}</td>
-    </tr>`).join('') : `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई एंट्री नहीं है</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999;">इस अवधि में कोई निवेश/निकासी नहीं है</td></tr>`;
 
   const container = document.createElement('div');
   container.style.position='fixed';
   container.style.left='-99999px';
   container.style.top='0';
   container.style.width='780px';
-  container.style.minHeight='1100px';
   container.style.background='#fff';
   container.style.fontFamily = "'Noto Sans Devanagari','Noto Sans',sans-serif";
   container.innerHTML = `
-    <div style="border:2px solid #145A32;border-radius:10px;overflow:hidden;">
+    <div style="border:2px solid #145A32;border-radius:10px;overflow:hidden;background:#fff;">
       <div style="background:linear-gradient(135deg,#145A32,#0B3D24);padding:26px 34px;display:flex;align-items:center;gap:18px;">
         ${logoSrc?`<img src="${logoSrc}" style="width:60px;height:60px;border-radius:12px;background:#fff;padding:3px;">`:''}
         <div>
           <div style="font-size:26px;font-weight:800;color:#fff;letter-spacing:0.5px;">${escapeHtml(shopName)}</div>
           ${shopAddress?`<div style="font-size:12px;color:#FCE3C9;margin-top:3px;">${escapeHtml(shopAddress)}</div>`:''}
-          <div style="font-size:13px;color:#F5A25A;letter-spacing:1px;margin-top:4px;font-weight:700;">👑 CAPITAL STATEMENT / पूंजी निवेश-निकासी स्टेटमेंट</div>
+          <div style="font-size:13px;color:#F5A25A;letter-spacing:1px;margin-top:4px;font-weight:700;">👑 CAPITAL ACCOUNT / पूंजी का पूर्ण हिसाब</div>
         </div>
       </div>
 
-      <div style="padding:24px 34px 6px;display:flex;justify-content:space-between;font-size:13px;">
+      <div style="padding:20px 34px 8px;display:flex;justify-content:space-between;font-size:13px;">
         <div>
-          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">अवधि</div>
+          <div style="font-size:11px;color:#999;margin-bottom:4px;">अवधि</div>
           <div style="font-size:15px;font-weight:700;color:#145A32;">${escapeHtml(data.periodLabel)}</div>
         </div>
         <div style="text-align:right;">
           <div><span style="color:#999;">बनाई गई दिनांक:</span> <b>${genDate}</b></div>
-          <div><span style="color:#999;">कुल एंट्री:</span> <b>${data.history.length}</b></div>
+          <div><span style="color:#999;">पूंजी एंट्री:</span> <b>${data.history.length}</b></div>
+        </div>
+      </div>
+
+      <div style="padding:10px 30px 0;display:flex;flex-wrap:wrap;gap:8px;">
+        <div style="flex:1;min-width:210px;background:#EAF6EE;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;color:#666;">कुल पूंजी निवेश</div>
+          <div style="font-size:19px;font-weight:800;color:#145A32;">${fmtMoney(data.totalInvest||0)}</div>
+        </div>
+        <div style="flex:1;min-width:210px;background:#FDECE7;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;color:#666;">कुल पूंजी निकासी</div>
+          <div style="font-size:19px;font-weight:800;color:#B3402A;">${fmtMoney(data.totalWithdraw||0)}</div>
+        </div>
+        <div style="flex:1;min-width:210px;background:#FDEEDF;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;color:#666;">कुल लाभ / हानि</div>
+          <div style="font-size:19px;font-weight:800;color:${(data.totalProfit||0)>=0?'#145A32':'#B3402A'};">${fmtMoney(data.totalProfit||0)}</div>
+        </div>
+        <div style="flex:1;min-width:210px;background:#EEF3F8;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;color:#666;">शुद्ध पूंजी</div>
+          <div style="font-size:19px;font-weight:800;color:#145A32;">${fmtMoney(data.netCapital||0)}</div>
         </div>
       </div>
 
       <div style="padding:16px 34px 0;">
+        <div style="font-size:15px;font-weight:800;color:#145A32;margin-bottom:8px;">1. पूंजी निवेश / निकासी की पूरी हिस्ट्री</div>
         <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
-          <thead>
-            <tr style="background:#FDEEDF;">
-              <th style="padding:10px;text-align:center;width:32px;color:#145A32;">S.No</th>
-              <th style="padding:10px;text-align:left;width:80px;color:#145A32;">दिनांक</th>
-              <th style="padding:10px;text-align:left;color:#145A32;">विवरण</th>
-              <th style="padding:10px;text-align:right;width:100px;color:#145A32;">निवेश (+)</th>
-              <th style="padding:10px;text-align:right;width:100px;color:#145A32;">निकासी (−)</th>
-            </tr>
-          </thead>
+          <thead><tr style="background:#FDEEDF;">
+            <th style="padding:10px;text-align:center;width:32px;color:#145A32;">S.No</th>
+            <th style="padding:10px;text-align:left;width:80px;color:#145A32;">दिनांक</th>
+            <th style="padding:10px;text-align:left;color:#145A32;">विवरण</th>
+            <th style="padding:10px;text-align:right;width:105px;color:#145A32;">निवेश (+)</th>
+            <th style="padding:10px;text-align:right;width:105px;color:#145A32;">निकासी (−)</th>
+          </tr></thead>
           <tbody>${rowsHtml}</tbody>
-          <tfoot>
-            <tr>
-              <td colspan="3" style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#0B3D24;border-top:2px solid #E8720C;">कुल (Total)</td>
-              <td style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#145A32;border-top:2px solid #E8720C;">${fmtMoney(data.periodInvest)}</td>
-              <td style="padding:12px 10px 4px;text-align:right;font-size:15px;font-weight:800;color:#D9670C;border-top:2px solid #E8720C;">${fmtMoney(data.periodWithdraw)}</td>
-            </tr>
-          </tfoot>
+          <tfoot><tr>
+            <td colspan="3" style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;border-top:2px solid #E8720C;">इस अवधि का कुल</td>
+            <td style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;color:#145A32;border-top:2px solid #E8720C;">${fmtMoney(data.periodInvest||0)}</td>
+            <td style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;color:#D9670C;border-top:2px solid #E8720C;">${fmtMoney(data.periodWithdraw||0)}</td>
+          </tr></tfoot>
         </table>
       </div>
 
-      <div style="margin:18px 34px 0;padding:14px 18px;border-radius:10px;background:#FDEEDF;display:flex;justify-content:space-between;align-items:center;">
-        <div style="font-size:14px;font-weight:700;color:#145A32;">शुद्ध (निवेश − निकासी)</div>
-        <div style="font-size:17px;font-weight:800;color:#145A32;">${fmtMoney(data.periodInvest - data.periodWithdraw)}</div>
+      <div style="padding:18px 34px 0;">
+        <div style="font-size:15px;font-weight:800;color:#145A32;margin-bottom:8px;">2. निकाली गई पूंजी से व्यक्तिगत / घर खर्च</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+          <thead><tr style="background:#FDECE7;">
+            <th style="padding:10px;text-align:center;width:32px;color:#B3402A;">S.No</th>
+            <th style="padding:10px;text-align:left;width:90px;color:#B3402A;">दिनांक</th>
+            <th style="padding:10px;text-align:left;color:#B3402A;">विवरण</th>
+            <th style="padding:10px;text-align:right;width:120px;color:#B3402A;">खर्च (−)</th>
+          </tr></thead>
+          <tbody>${personalRowsHtml}</tbody>
+          <tfoot><tr>
+            <td colspan="3" style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;border-top:2px solid #D9670C;">इस अवधि का व्यक्तिगत खर्च</td>
+            <td style="padding:12px 10px 4px;text-align:right;font-size:14px;font-weight:800;color:#B3402A;border-top:2px solid #D9670C;">${fmtMoney(data.periodPersonalSpent||0)}</td>
+          </tr></tfoot>
+        </table>
       </div>
 
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:30px 34px 20px;">
-        <div style="font-size:11.5px;color:#999;line-height:1.6;">यह कंप्यूटर जनित स्टेटमेंट है।</div>
-        <div style="text-align:center;">
-          <div style="border-top:1px solid #999;padding-top:6px;width:160px;font-size:11.5px;color:#666;">अधिकृत हस्ताक्षर</div>
+      <div style="margin:18px 34px 0;padding:14px 18px;border-radius:10px;background:#FDEEDF;">
+        <div style="font-size:15px;font-weight:800;color:#145A32;margin-bottom:8px;">3. कुल पूंजी स्थिति</div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>कुल निवेश</span><b style="color:#145A32;">${fmtMoney(data.totalInvest||0)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>कुल निकासी</span><b style="color:#B3402A;">${fmtMoney(data.totalWithdraw||0)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>कुल घर/व्यक्तिगत खर्च</span><b style="color:#B3402A;">${fmtMoney(data.totalPersonalSpent||0)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid #E2C6A9;margin-top:4px;"><span style="font-weight:800;">निकासी में से बची व्यक्तिगत नकदी</span><b style="color:#145A32;">${fmtMoney(data.cashInHand||0)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid #E2C6A9;margin-top:4px;"><span style="font-weight:800;">शुद्ध पूंजी (निवेश − प्रारंभिक निकासी + लाभ)</span><b style="color:#145A32;">${fmtMoney(data.netCapital||0)}</b></div>
+      </div>
+
+      <div style="padding:18px 34px 0;">
+        <div style="font-size:15px;font-weight:800;color:#145A32;margin-bottom:8px;">4. वर्तमान वित्तीय स्थिति</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <div style="flex:1;min-width:200px;border:1px solid #eee;border-radius:8px;padding:10px;">नकद: <b>${fmtMoney(data.totalCashBoth||0)}</b></div>
+          <div style="flex:1;min-width:200px;border:1px solid #eee;border-radius:8px;padding:10px;">बैंक: <b>${fmtMoney(data.totalBankBoth||0)}</b></div>
+          <div style="flex:1;min-width:200px;border:1px solid #eee;border-radius:8px;padding:10px;">क्रेडिट कार्ड बकाया: <b>${fmtMoney(data.totalCardBoth||0)}</b></div>
         </div>
       </div>
 
-      <div style="background:#FDEEDF;text-align:center;padding:10px;font-size:11px;color:#145A32;font-weight:700;letter-spacing:0.5px;">
-        ⚡ Powered by Dongare Mobile Bhainsdehi
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:30px 34px 20px;">
+        <div style="font-size:11.5px;color:#999;line-height:1.6;">यह कंप्यूटर जनित पूंजी रिपोर्ट है।<br>निवेश, निकासी और व्यक्तिगत खर्च अलग-अलग दिखाए गए हैं।</div>
+        <div style="text-align:center;"><div style="border-top:1px solid #999;padding-top:6px;width:160px;font-size:11.5px;color:#666;">अधिकृत हस्ताक्षर</div></div>
       </div>
-    </div>
-  `;
+      <div style="background:#FDEEDF;text-align:center;padding:10px;font-size:11px;color:#145A32;font-weight:700;letter-spacing:0.5px;">⚡ Powered by Dongare Mobile Bhainsdehi</div>
+    </div>`;
   document.body.appendChild(container);
-
-  const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff'});
+  const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff', useCORS:true});
   document.body.removeChild(container);
   const pdf = new window.jspdf.jsPDF({unit:'pt', format:'a4'});
   addCanvasPagesToPdf(pdf, canvas, 24);
@@ -3820,7 +3830,7 @@ function stockFormHtml(it){
       <option value="cash">नकद से खरीदा</option>
       <option value="credit">उधार में लिया (सप्लायर से)</option>
       <option value="capital">मालिक की पूंजी से (पहले से मौजूद माल)</option>
-      <option value="none">सिर्फ़ स्टॉक जोड़ें (पूंजी के विरुद्ध)</option>
+      <option value="none">सिर्फ़ स्टॉक जोड़ें, कोई हिसाब एंट्री ना बनाएं</option>
     </select>
     <div id="stockSourcePartyField">
       <label>सप्लायर/लेनदार का नाम</label>
@@ -3853,6 +3863,24 @@ function closeStockForm(){
   const wrap = document.getElementById('stockFormWrap');
   if(wrap) wrap.innerHTML='';
 }
+
+function validatePurchaseStockSource(){
+  const sourceEl = document.getElementById('s_source');
+  const source = sourceEl ? sourceEl.value : 'none';
+  if(source==='none'){
+    alert('⚠️ स्टॉक खरीद के लिए भुगतान स्रोत चुनना जरूरी है।\n\nकैश = नकद कम होगा\nक्रेडिट = लेनदार बढ़ेगा\nपूंजी = मालिक की पूंजी बढ़ेगी\n\nइससे Trial Balance और Balance Sheet में अंतर नहीं आएगा।');
+    return false;
+  }
+  if(source==='credit'){
+    const partyEl = document.getElementById('s_source_party');
+    if(!partyEl || !partyEl.value.trim()){
+      alert('कृपया सप्लायर/लेनदार का नाम डालें।');
+      return false;
+    }
+  }
+  return true;
+}
+
 async function saveStock(){
   const name = document.getElementById('s_name').value.trim();
   const company = document.getElementById('s_company').value.trim();
@@ -3881,28 +3909,18 @@ async function saveStock(){
       if(!sourceParty){ alert('कृपया सप्लायर/लेनदार का नाम डालें'); return; }
     }
     sourceInfo = {source, sourceParty};
+    if(!validatePurchaseStockSource()) return;
   }
 
   if(state.editingStockId){
     const it = stock.find(s=>s.id===state.editingStockId);
     if(it){
-      const linked = currentTx().find(t=>Array.isArray(t.stockAddedIds) && t.stockAddedIds.includes(it.id));
-      const sold = currentTx().some(x=>x.stockRestore && x.stockRestore.id===it.id);
-      if(sold && linked){ alert('यह स्टॉक बिक चुका है, इसलिए इसकी मूल खरीद लागत/मात्रा बदलना सुरक्षित नहीं है।'); return; }
-      if(linked){
-        linked.stockLines = Array.isArray(linked.stockLines) ? linked.stockLines : [{id:it.id,cost:Number(it.costPrice)||0,qty:Number(it.qty)||1}];
-        const line = linked.stockLines.find(x=>x.id===it.id);
-        if(!line){ alert('इस स्टॉक की linked purchase line नहीं मिली।'); return; }
-        line.cost=cost; line.qty=qty;
-        linked.amount = linked.stockLines.reduce((sum,x)=>sum+(Number(x.cost)||0)*(Number(x.qty)||0),0);
-      }
       it.name=name; it.company=company; it.costPrice=cost; it.sellPrice = (sellRaw==='' || isNaN(sell)) ? null : sell;
       it.phoneType=phoneType; it.qty=qty; it.imei=imei; it.barcode=barcode; it.note=note;
     }
   } else {
-    const newStockId = uid();
     stock.push({
-      id:newStockId, ts:Date.now(), name, company, costPrice:cost,
+      id:uid(), ts:Date.now(), name, company, costPrice:cost,
       sellPrice: (sellRaw==='' || isNaN(sell)) ? null : sell,
       phoneType, qty, imei, barcode, note
     });
@@ -3910,22 +3928,13 @@ async function saveStock(){
     if(sourceInfo && totalCost>0){
       const itemLabel = (company?(company+' — '):'')+name;
       if(sourceInfo.source==='cash'){
-        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_cash', amount:totalCost, cost:0, date:state.date, party:'', note:'स्टॉक खरीद: '+itemLabel, paymentMode:'cash', stockLinked:true, stockAddedIds:[newStockId], stockLines:[{id:newStockId,cost:cost,qty:qty}]});
-        stock.find(x=>x.id===newStockId).purchaseTxId = currentTx()[currentTx().length-1].id;
+        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_cash', amount:totalCost, cost:0, date:state.date, party:'', note:'स्टॉक खरीद: '+itemLabel, paymentMode:'cash', stockLinked:true});
       } else if(sourceInfo.source==='credit'){
-        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_credit', amount:totalCost, cost:0, date:state.date, party:sourceInfo.sourceParty, note:'स्टॉक खरीद: '+itemLabel, stockLinked:true, stockAddedIds:[newStockId], stockLines:[{id:newStockId,cost:cost,qty:qty}]});
-        stock.find(x=>x.id===newStockId).purchaseTxId = currentTx()[currentTx().length-1].id;
+        currentTx().push({id:uid(), ts:Date.now(), type:'purchase_credit', amount:totalCost, cost:0, date:state.date, party:sourceInfo.sourceParty, note:'स्टॉक खरीद: '+itemLabel, stockLinked:true});
       } else if(sourceInfo.source==='capital'){
-        currentTx().push({id:uid(), ts:Date.now(), type:'capital_invest_stock', amount:totalCost, cost:0, date:state.date, party:'', note:'पूंजी (माल के रूप में): '+itemLabel, stockLinked:true, stockAddedIds:[newStockId], stockLines:[{id:newStockId,cost:cost,qty:qty}]});
-        stock.find(x=>x.id===newStockId).purchaseTxId = currentTx()[currentTx().length-1].id;
+        currentTx().push({id:uid(), ts:Date.now(), type:'capital_invest_stock', amount:totalCost, cost:0, date:state.date, party:'', note:'पूंजी (माल के रूप में): '+itemLabel, stockLinked:true});
       }
-      else if(sourceInfo.source==='none'){
-        // हर asset का कोई न कोई स्रोत होना चाहिए; इसलिए manual stock addition को
-        // Owner's Capital के विरुद्ध दर्ज किया जाता है, ताकि Balance Sheet/TB न टूटे।
-        const stx = {id:uid(), ts:Date.now(), type:'capital_invest_stock', amount:totalCost, cost:0, date:state.date, party:'', note:'स्टॉक जोड़ा गया (पूंजी के विरुद्ध): '+itemLabel, stockLinked:true, stockAddedIds:[newStockId], stockLines:[{id:newStockId,cost:cost,qty:qty}]};
-        currentTx().push(stx);
-        stock.find(x=>x.id===newStockId).purchaseTxId = stx.id;
-      }
+      // source === 'none' → कोई एंट्री नहीं बनेगी
     }
   }
   await saveShop(state.shop);
@@ -3935,30 +3944,8 @@ async function saveStock(){
 async function deleteStock(id){
   if(!confirm('यह स्टॉक आइटम मिटाएं?')) return;
   const stock = currentStock();
-  const item = stock.find(s=>s.id===id);
-  if(!item) return;
-  // यदि यह stock किसी accounting purchase/capital entry से जुड़ा है,
-  // तो सीधे stock delete करने से Balance Sheet टूट सकती है।
-  const linkedTx = currentTx().find(t=>Array.isArray(t.stockAddedIds) && t.stockAddedIds.includes(id));
-  if(linkedTx){
-    const sold = currentTx().some(t=>t.stockRestore && t.stockRestore.id===id);
-    if(sold){
-      alert('यह स्टॉक पहले ही बिक चुका है। इसे सीधे स्टॉक से नहीं मिटा सकते; पहले संबंधित बिक्री/खरीद एंट्री सुधारें।');
-      return;
-    }
-    if(!confirm('यह स्टॉक खरीद/पूंजी एंट्री से जुड़ा है। इसे हटाने से पूरी जुड़ी accounting entry भी हटेगी। जारी रखें?')) return;
-    const idx = currentTx().findIndex(t=>t.id===linkedTx.id);
-    if(idx>-1) currentTx().splice(idx,1);
-    const sIdx = stock.findIndex(s=>s.id===id);
-    if(sIdx>-1) stock.splice(sIdx,1);
-    await saveShop(state.shop); renderSection(); return;
-  }
-  // बिना किसी accounting source वाला manually-added stock भी केवल 'delete' से
-  // नहीं हटेगा; पहले user को स्पष्ट करना जरूरी है क्योंकि asset घट रहा है।
-  // Legacy/manual stock बिना accounting source के मिला है। सीधे delete करने से
-  // asset कम होगा लेकिन कोई accounting entry नहीं बदलेगी; इसलिए deletion रोकें।
-  alert('यह स्टॉक किसी accounting entry से जुड़ा नहीं है। इसे सीधे मिटाने से Balance Sheet बिगड़ सकती है। पहले इसे सही purchase/capital-stock entry से link करें।');
-  return;
+  const idx = stock.findIndex(s=>s.id===id);
+  if(idx>-1){ stock.splice(idx,1); await saveShop(state.shop); renderSection(); }
 }
 
 function quickSell(id){
@@ -4196,24 +4183,6 @@ function sectionSettings(){
       <button class="submit-btn" onclick="saveOpeningBank()">बैंक बैलेंस सेव करें</button>
     </div>
     <div class="party-row" style="flex-wrap:wrap;gap:8px;margin-top:8px;">
-      <span style="flex:1;font-size:14px;">📦 शुरूआती स्टॉक (लागत मूल्य): <b>${fmtMoney(opening.stockValue||0)}</b></span>
-      <button class="del-btn" onclick="toggleBlockEdit('openingStockEdit')" title="एडिट">✎</button>
-    </div>
-    <div id="openingStockEdit" style="display:${state.expandedPartyEdit['openingStockEdit']?'block':'none'};margin-top:8px;">
-      <label>शुरूआती स्टॉक (₹) — यह केवल Asset रहेगा; Capital में दोबारा नहीं जोड़ा जाएगा</label>
-      <input type="number" id="op_stock" value="${opening.stockValue||0}">
-      <button class="submit-btn" onclick="saveOpeningStock()">स्टॉक सेव करें</button>
-    </div>
-    <div class="party-row" style="flex-wrap:wrap;gap:8px;margin-top:8px;">
-      <span style="flex:1;font-size:14px;">🧾 शुरूआती GST बकाया: <b>${fmtMoney(opening.gstPayable||0)}</b></span>
-      <button class="del-btn" onclick="toggleBlockEdit('openingGstEdit')" title="एडिट">✎</button>
-    </div>
-    <div id="openingGstEdit" style="display:${state.expandedPartyEdit['openingGstEdit']?'block':'none'};margin-top:8px;">
-      <label>शुरूआती GST देयता (₹)</label>
-      <input type="number" id="op_gst" value="${opening.gstPayable||0}">
-      <button class="submit-btn" onclick="saveOpeningGst()">GST देयता सेव करें</button>
-    </div>
-    <div class="party-row" style="flex-wrap:wrap;gap:8px;margin-top:8px;">
       <span style="flex:1;font-size:14px;">💳 शुरूआती क्रेडिट कार्ड बकाया: <b>${fmtMoney(opening.card||0)}</b></span>
       <button class="del-btn" onclick="toggleBlockEdit('openingCardEdit')" title="एडिट">✎</button>
     </div>
@@ -4232,11 +4201,11 @@ function sectionSettings(){
       <button class="submit-btn" onclick="saveOpeningProfit()">लाभ सेव करें</button>
     </div>
     <div class="party-row" style="flex-wrap:wrap;gap:8px;margin-top:8px;">
-      <span style="flex:1;font-size:14px;">शुरूआती पूंजी (Balancing Equity): <b>${fmtMoney((Number(opening.capitalInvest)||0)-(Number(opening.capitalWithdraw)||0)+(Number(opening.profit)||0))}</b></span>
+      <span style="flex:1;font-size:14px;">शुरूआती पूंजी निवेश: <b>${fmtMoney(opening.capitalInvest||0)}</b></span>
       <button class="del-btn" onclick="toggleBlockEdit('openingCapInvestEdit')" title="एडिट">✎</button>
     </div>
     <div id="openingCapInvestEdit" style="display:${state.expandedPartyEdit['openingCapInvestEdit']?'block':'none'};margin-top:8px;">
-      <label>शुरूआती पूंजी (₹) — Opening Assets − Opening Liabilities के बराबर रखें</label>
+      <label>शुरूआती पूंजी निवेश (₹) — ऐप शुरू करने से पहले मालिक ने जितना निवेश किया था</label>
       <input type="number" id="op_capinvest" value="${opening.capitalInvest||0}">
       <button class="submit-btn" onclick="saveOpeningCapInvest()">सेव करें</button>
     </div>
@@ -4320,82 +4289,39 @@ async function saveManualStockValue(){
   renderSection();
 }
 
-function reconcileOpeningCapital(shopId){
-  const d = state.data[shopId];
-  if(!d) return;
-  const o = d.opening || (d.opening = {});
-  let debtors=0, creditors=0;
-  Object.values(o.parties||{}).forEach(info=>{
-    const amt = Number(info?.amount)||0;
-    if(info?.type==='debtor') debtors += amt;
-    else if(info?.type==='creditor') creditors += amt;
-  });
-  // Opening Stock is an ASSET. It must not be added a second time to capital.
-  // Opening Capital Investment is therefore kept as the balancing owner's equity.
-  const openingAssets = (Number(o.cash)||0) + (Number(o.bank)||0) + (Number(o.stockValue)||0) + debtors;
-  const openingLiabilities = creditors + (Number(o.card)||0) + (Number(o.gstPayable)||0);
-  const openingEquity = openingAssets - openingLiabilities;
-  o.capitalInvest = openingEquity + (Number(o.capitalWithdraw)||0) - (Number(o.profit)||0);
-  return openingEquity;
-}
-
 async function saveOpeningCash(){
   const val = parseFloat(document.getElementById('op_cash').value);
   state.data[state.shop].opening.cash = isNaN(val) ? 0 : val;
-  reconcileOpeningCapital(state.shop);
   await saveShop(state.shop);
   renderSection();
 }
 async function saveOpeningBank(){
   const val = parseFloat(document.getElementById('op_bank').value);
   state.data[state.shop].opening.bank = isNaN(val) ? 0 : val;
-  reconcileOpeningCapital(state.shop);
   await saveShop(state.shop);
   renderSection();
 }
-async function saveOpeningStock(){
-  const val = parseFloat(document.getElementById('op_stock').value);
-  state.data[state.shop].opening.stockValue = (!isNaN(val) && val>=0) ? val : 0;
-  reconcileOpeningCapital(state.shop);
-  await saveShop(state.shop); alert('शुरूआती स्टॉक सेव हो गया ✓'); renderSection();
-}
-async function saveOpeningGst(){
-  const val = parseFloat(document.getElementById('op_gst').value);
-  state.data[state.shop].opening.gstPayable = (!isNaN(val) && val>=0) ? val : 0;
-  reconcileOpeningCapital(state.shop);
-  await saveShop(state.shop); alert('शुरूआती GST देयता सेव हो गई ✓'); renderSection();
-}
-
 async function saveOpeningCard(){
   const val = parseFloat(document.getElementById('op_card').value);
   state.data[state.shop].opening.card = isNaN(val) ? 0 : val;
-  reconcileOpeningCapital(state.shop);
   await saveShop(state.shop);
   renderSection();
 }
 async function saveOpeningProfit(){
   const val = parseFloat(document.getElementById('op_profit').value);
   state.data[state.shop].opening.profit = isNaN(val) ? 0 : val;
-  reconcileOpeningCapital(state.shop);
   await saveShop(state.shop);
   renderSection();
 }
 async function saveOpeningCapInvest(){
   const val = parseFloat(document.getElementById('op_capinvest').value);
-  if(isNaN(val)){ alert('कृपया सही पूंजी राशि डालें'); return; }
-  // This field is the opening owner's equity. To keep opening balances double-entry safe,
-  // convert it to the corresponding capital-invest figure after considering opening profit/withdrawal.
-  const o = state.data[state.shop].opening;
-  const openingProfit = Number(o.profit)||0;
-  const openingWithdraw = Number(o.capitalWithdraw)||0;
-  o.capitalInvest = val + openingWithdraw - openingProfit;
+  state.data[state.shop].opening.capitalInvest = isNaN(val) ? 0 : val;
   await saveShop(state.shop);
   renderSection();
 }
 async function saveOpeningCapWithdraw(){
   const val = parseFloat(document.getElementById('op_capwithdraw').value);
   state.data[state.shop].opening.capitalWithdraw = isNaN(val) ? 0 : val;
-  reconcileOpeningCapital(state.shop);
   await saveShop(state.shop);
   renderSection();
 }
@@ -4415,7 +4341,6 @@ async function saveOpeningParty(name){
   const amt = parseFloat(document.getElementById('op_amt_'+sid).value);
   if(!state.data[state.shop].opening.parties) state.data[state.shop].opening.parties = {};
   state.data[state.shop].opening.parties[name] = {type, amount: isNaN(amt)?0:amt};
-  reconcileOpeningCapital(state.shop);
   await saveShop(state.shop);
   renderSection();
 }
@@ -4608,10 +4533,6 @@ async function addTx(){
   const party = document.getElementById('f_party').value.trim();
   const note = document.getElementById('f_note').value.trim();
   const meta = TYPE_META[type];
-  if(type==='capital_invest_stock'){
-    alert('पूंजी निवेश (माल के रूप में) केवल Stock screen से जोड़ें, ताकि stock और accounting दोनों linked रहें।');
-    return;
-  }
   const stockPickEl = document.getElementById('f_stock_pick');
   const stockPickId = (meta.kind==='sale' && stockPickEl) ? stockPickEl.value : '';
 
@@ -4661,7 +4582,7 @@ async function addTx(){
     if(it){
       const imeiEl = document.getElementById('f_stock_sell_imei');
       if(imeiEl) it.imei = imeiEl.value.trim();
-      tx.stockRestore = { id: it.id, name: it.name, company: it.company||'', costPrice: it.costPrice, sellPrice: it.sellPrice||null, phoneType: it.phoneType||'android', imei: it.imei||'', barcode: it.barcode||'', note: it.note||'', qtyUsed: 1, purchaseTxId: it.purchaseTxId||'' };
+      tx.stockRestore = { id: it.id, name: it.name, company: it.company||'', costPrice: it.costPrice, sellPrice: it.sellPrice||null, phoneType: it.phoneType||'android', imei: it.imei||'', barcode: it.barcode||'', note: it.note||'', qtyUsed: 1 };
       it.qty -= 1;
       if(it.qty<=0){
         const idx = stock.findIndex(s=>s.id===stockPickId);
@@ -4681,7 +4602,6 @@ async function addTx(){
     }
     const stock = currentStock();
     const addedIds = [];
-    const stockLines = [];
     for(let i=1;i<=sQty;i++){
       const nameEl = document.getElementById('f_stock_itemname_'+i);
       const perName = (nameEl && nameEl.value.trim()) ? nameEl.value.trim() : sName;
@@ -4690,13 +4610,11 @@ async function addTx(){
       const newId = uid();
       stock.push({
         id:newId, ts:Date.now(), name:perName, company:sCompany, costPrice:perPieceCosts[i-1],
-        sellPrice:perPieceSells[i-1], phoneType:sPhoneType, qty:1, imei, barcode:'', note:'', purchaseTxId:tx.id
+        sellPrice:perPieceSells[i-1], phoneType:sPhoneType, qty:1, imei, barcode:'', note:''
       });
       addedIds.push(newId);
-      stockLines.push({id:newId, cost:Number(perPieceCosts[i-1])||0, qty:1});
     }
     tx.stockAddedIds = addedIds;
-    tx.stockLines = stockLines;
   }
 
   currentTx().push(tx);
@@ -4738,7 +4656,7 @@ function restoreStockFromTx(sr){
       id: sr.id, ts: Date.now(), name: sr.name, company: sr.company||'',
       costPrice: sr.costPrice||0, sellPrice: sr.sellPrice||null,
       phoneType: sr.phoneType||'android', qty: sr.qtyUsed||1,
-      imei: sr.imei||'', barcode: sr.barcode||'', note: sr.note||'', purchaseTxId: sr.purchaseTxId||''
+      imei: sr.imei||'', barcode: sr.barcode||'', note: sr.note||''
     });
   }
 }
@@ -4751,40 +4669,13 @@ async function deleteTx(id){
     const tx = list[idx];
     if(tx.stockRestore) restoreStockFromTx(tx.stockRestore);
     if(tx.stockAddedIds && tx.stockAddedIds.length){
-      const soldIds = new Set();
-      state.data[state.shop].transactions.forEach(other=>{
-        if(other.id===tx.id) return;
-        if(other.stockRestore && other.stockRestore.id) soldIds.add(other.stockRestore.id);
-      });
-      const sold = tx.stockAddedIds.filter(sid=>soldIds.has(sid));
-      if(sold.length){
-        alert('यह खरीद/पूंजी-स्टॉक एंट्री नहीं मिटाई जा सकती क्योंकि इससे जुड़ा स्टॉक पहले ही बिक चुका है। पहले संबंधित बिक्री एंट्री हटाएं/सुधारें।');
-        return;
-      }
-      if(tx.type==='purchase_credit' && tx.party){
-        const dependent = list.some(other=> other.id!==tx.id && (other.type==='pay_due' || other.type==='creditor_scheme') && other.party===tx.party && Number(other.amount)>0);
-        if(dependent){
-          alert('इस सप्लायर की purchase के बाद payment/scheme एंट्री मौजूद है। पहले संबंधित payment/scheme एंट्री सुधारें या हटाएं, फिर purchase delete करें।');
-          return;
-        }
-      }
       const stock = currentStock();
       tx.stockAddedIds.forEach(sid=>{
         const sIdx = stock.findIndex(s=>s.id===sid);
-        if(sIdx>-1) stock.splice(sIdx,1);
+        if(sIdx>-1) stock.splice(sIdx,1); // अगर यह पीस अभी तक बिका नहीं है तो ही हटेगा
       });
     }
     list.splice(idx,1);
-    // Invoice GST is a linked liability entry. If the last sale line of that invoice is deleted,
-    // remove the linked GST entry too so cash/debtor and GST liability cannot drift apart.
-    if(tx.invoiceNo){
-      const hasOtherInvoiceSales = list.some(x=>x.invoiceNo===tx.invoiceNo && (x.type==='sale_cash' || x.type==='sale_credit'));
-      if(!hasOtherInvoiceSales){
-        for(let i=list.length-1;i>=0;i--){
-          if(list[i].type==='gst_output' && list[i].invoiceNo===tx.invoiceNo) list.splice(i,1);
-        }
-      }
-    }
     await saveShop(state.shop);
     // अगर यह "दूसरी दुकान" वाली लेन-देन एंट्री थी, तो दूसरी दुकान में बनी मिलती-जुलती एंट्री भी मिटाएं
     if(tx.linkedTxId){
@@ -4880,10 +4771,6 @@ async function saveEditTx(id){
   if(!t) return;
   const type = document.getElementById('et_type').value;
   const meta = TYPE_META[type];
-  if(type==='capital_invest_stock' && !(t.stockAddedIds && t.stockAddedIds.length)){
-    alert('पूंजी निवेश (माल के रूप में) केवल linked Stock entry के साथ ही मान्य है। इसे सामान्य accounting entry के रूप में नहीं बनाया/बदला जा सकता।');
-    return;
-  }
   const amount = parseFloat(document.getElementById('et_amount').value);
   const date = document.getElementById('et_date').value;
   const partyField = document.getElementById('et_party');
@@ -4897,51 +4784,6 @@ async function saveEditTx(id){
   if(meta.needsCost){
     cost = parseFloat(document.getElementById('et_cost').value);
     if(isNaN(cost) || cost<0){ alert('कृपया सही लागत डालें (अगर मुफ़्त है तो 0 डालें)'); return; }
-  }
-  // Stock-linked purchase/supply edits: the accounting amount and stock cost must stay identical.
-  if(t.stockAddedIds && t.stockAddedIds.length){
-    const stockTypes = ['purchase_cash','purchase_credit','capital_invest_stock'];
-    if(!stockTypes.includes(t.type) || type!==t.type){
-      alert('स्टॉक से जुड़ी खरीद/पूंजी एंट्री का प्रकार नहीं बदला जा सकता। पहले स्टॉक/संबंधित बिक्री को सुधारें।');
-      return;
-    }
-    const soldIds = new Set();
-    currentTx().forEach(other=>{
-      if(other.id!==t.id && other.stockRestore?.id) soldIds.add(other.stockRestore.id);
-    });
-    if(t.stockAddedIds.some(sid=>soldIds.has(sid))){
-      alert('इस एंट्री से जुड़ा स्टॉक बिक चुका है। इसलिए खरीद की राशि/लागत बदलना सुरक्षित नहीं है।');
-      return;
-    }
-    const stock = currentStock();
-    const lines = Array.isArray(t.stockLines) && t.stockLines.length
-      ? t.stockLines.map(l=>({id:l.id,cost:Number(l.cost)||0,qty:Number(l.qty)||1}))
-      : t.stockAddedIds.map(sid=>{ const x=stock.find(a=>a.id===sid); return {id:sid,cost:Number(x?.costPrice)||0,qty:Number(x?.qty)||1}; });
-    if(lines.some(line=>!stock.some(x=>x.id===line.id))){
-      alert('इस purchase से जुड़ा stock item नहीं मिला। पहले Stock screen में data ठीक करें।');
-      return;
-    }
-    const oldTotal = lines.reduce((sum,l)=>sum+l.cost*l.qty,0);
-    if(oldTotal<=0){ alert('स्टॉक-लिंक्ड खरीद की पुरानी लागत नहीं मिल रही। इसे स्टॉक स्क्रीन से एडिट करें।'); return; }
-    const factor = amount/oldTotal;
-    lines.forEach(line=>{
-      const item = stock.find(x=>x.id===line.id);
-      const newCost = line.cost*factor;
-      item.costPrice = Number(newCost.toFixed(2));
-      item.qty = Number(line.qty)||1;
-      line.cost = item.costPrice;
-    });
-    const syncedTotal = lines.reduce((sum,l)=>sum+l.cost*l.qty,0);
-    // absorb rounding difference into the last line so totals exactly match.
-    const delta = amount-syncedTotal;
-    if(Math.abs(delta)>0.005){
-      const last=lines[lines.length-1];
-      const item=stock.find(x=>x.id===last.id);
-      const q=Number(last.qty)||1;
-      item.costPrice = Number((Number(item.costPrice||0)+delta/q).toFixed(2));
-      last.cost=item.costPrice;
-    }
-    t.stockLines = lines;
   }
 
   t.type = type;
