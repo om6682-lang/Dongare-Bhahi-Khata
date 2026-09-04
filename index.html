@@ -2834,7 +2834,16 @@ function sectionBalanceSheet(){
   const totalBank = perShop.reduce((s,p)=>s+p.cum.bank,0);
   const totalCard = perShop.reduce((s,p)=>s+p.cum.card,0);
   const totalGstPayable = perShop.reduce((s,p)=>s+(p.cum.gstPayable||0),0);
-  const totalStockValue = perShop.reduce((s,p)=>s+computeStockValue(p.id, asOf),0);
+  // स्टॉक को दो अलग हिस्सों में दिखाएँ:
+  // 1) स्टॉक टैब में ट्रैक होने वाला वास्तविक स्टॉक
+  // 2) बिना स्टॉक-लिंक वाली खरीद से बनी Asset वैल्यू
+  const totalTrackedStockValue = perShop.reduce((s,p)=>{
+    if(asOf) return s + computeTrackedStockValueAsOf(p.id, asOf);
+    const stock = state.data[p.id].stock || [];
+    return s + stock.reduce((x,it)=>x+(Number(it.costPrice)||0)*(Number(it.qty)||0),0);
+  },0);
+  const totalNonStockPurchaseAsset = perShop.reduce((s,p)=>s+computeManualStockValue(p.id, asOf),0);
+  const totalStockValue = totalTrackedStockValue + totalNonStockPurchaseAsset;
   const totalDebtors = perShop.reduce((s,p)=>{
     const d = Object.values(p.cum.debtors).filter(v=>v>0.5).reduce((a,b)=>a+b,0);
     return s+d;
@@ -2857,7 +2866,7 @@ function sectionBalanceSheet(){
   const isBalanced = Math.abs(difference) < 1;
 
   const asOfLabel = asOf ? fmtDate(asOf) : 'आज';
-  state.lastBalanceSheetText = buildBalanceSheetShareText(bothWord, asOfLabel, totalCash, totalBank, totalStockValue, totalDebtors, totalCreditors, totalCard, totalGstPayable, netCapital, totalAssets, totalLiabCapital, difference);
+  state.lastBalanceSheetText = buildBalanceSheetShareText(bothWord, asOfLabel, totalCash, totalBank, totalTrackedStockValue, totalNonStockPurchaseAsset, totalStockValue, totalDebtors, totalCreditors, totalCard, totalGstPayable, netCapital, totalAssets, totalLiabCapital, difference);
 
   return `
   <div class="card">
@@ -2876,7 +2885,8 @@ function sectionBalanceSheet(){
     <h2>संपत्ति (Assets)</h2>
     <div class="party-row"><span class="pname">नकद (Cash in Hand)</span><span class="pos">${fmtMoney(totalCash)}</span></div>
     <div class="party-row"><span class="pname">🏦 बैंक बैलेंस</span><span class="pos">${fmtMoney(totalBank)}</span></div>
-    <div class="party-row"><span class="pname">📦 स्टॉक (लागत मूल्य पर)</span><span class="pos">${fmtMoney(totalStockValue)}</span></div>
+    <div class="party-row"><span class="pname">📦 स्टॉक (लागत मूल्य पर)</span><span class="pos">${fmtMoney(totalTrackedStockValue)}</span></div>
+    <div class="party-row"><span class="pname">📦 बिना स्टॉक वाली खरीद (Asset)</span><span class="pos">${fmtMoney(totalNonStockPurchaseAsset)}</span></div>
     <div class="party-row"><span class="pname">सुंदरी देनदार (Sundry Debtors)</span><span class="pos">${fmtMoney(totalDebtors)}</span></div>
     <div class="total-line"><span>कुल संपत्ति (Total Assets)</span><span class="pos" style="font-size:18px;">${fmtMoney(totalAssets)}</span></div>
   </div>
@@ -2908,12 +2918,14 @@ function clearBalanceSheetAsOf(){
   renderSection();
 }
 
-function buildBalanceSheetShareText(bothWord, asOfLabel, cash, bank, stockVal, debtors, creditors, card, gstPayable, capital, totalAssets, totalLiabCapital, difference){
+function buildBalanceSheetShareText(bothWord, asOfLabel, cash, bank, trackedStockVal, nonStockPurchaseAsset, stockVal, debtors, creditors, card, gstPayable, capital, totalAssets, totalLiabCapital, difference){
   let text = `⚖️ ${bothWord} — बैलेंस शीट (${asOfLabel} तक)\n\n`;
   text += `संपत्ति (Assets):\n`;
   text += `नकद: ${fmtMoney(cash)}\n`;
   text += `बैंक: ${fmtMoney(bank)}\n`;
-  text += `स्टॉक: ${fmtMoney(stockVal)}\n`;
+  text += `स्टॉक (लागत मूल्य): ${fmtMoney(trackedStockVal)}\n`;
+  text += `बिना स्टॉक वाली खरीद (Asset): ${fmtMoney(nonStockPurchaseAsset)}\n`;
+  text += `स्टॉक + बिना स्टॉक वाली खरीद: ${fmtMoney(stockVal)}\n`;
   text += `देनदार: ${fmtMoney(debtors)}\n`;
   text += `कुल संपत्ति: ${fmtMoney(totalAssets)}\n\n`;
   text += `देयताएं + पूंजी:\n`;
@@ -2962,8 +2974,10 @@ function sectionTrialBalance(){
     const tag = multiShop ? ` — ${p.name}` : '';
     if(Math.abs(p.cum.cash) > 0.5){ rows.push({label:'नकद (Cash in Hand)'+tag, dr:p.cum.cash>0?p.cum.cash:0, cr:p.cum.cash<0?-p.cum.cash:0}); }
     if(Math.abs(p.cum.bank) > 0.5){ rows.push({label:'🏦 बैंक बैलेंस'+tag, dr:p.cum.bank>0?p.cum.bank:0, cr:p.cum.bank<0?-p.cum.bank:0}); }
-    const stockVal = computeStockValue(p.id, asOf);
-    if(Math.abs(stockVal) > 0.5){ rows.push({label:'📦 स्टॉक (वर्तमान लागत मूल्य पर)'+tag, dr:stockVal, cr:0}); }
+    const trackedStockVal = asOf ? computeTrackedStockValueAsOf(p.id, asOf) : (state.data[p.id].stock||[]).reduce((s,it)=>s+(Number(it.costPrice)||0)*(Number(it.qty)||0),0);
+    const nonStockPurchaseAsset = computeManualStockValue(p.id, asOf);
+    if(Math.abs(trackedStockVal) > 0.5){ rows.push({label:'📦 स्टॉक (लागत मूल्य पर)'+tag, dr:trackedStockVal, cr:0}); }
+    if(Math.abs(nonStockPurchaseAsset) > 0.5){ rows.push({label:'📦 बिना स्टॉक वाली खरीद (Asset)'+tag, dr:nonStockPurchaseAsset, cr:0}); }
     Object.entries(p.cum.debtors).forEach(([name,amt])=>{
       if(amt > 0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:amt, cr:0});
       else if(amt < -0.5) rows.push({label:escapeHtml(name)+' (देनदार)'+tag, dr:0, cr:-amt});
@@ -3253,14 +3267,37 @@ function sectionCapital(){
     `<div class="stat"><div class="label">${p.name} — आज</div><div class="val ${p.today.profit>=0?'pos':'neg'}">${fmtMoney(p.today.profit)}</div></div>`
   ).join('') : '';
 
-  const perShopCumHtml = multiShop ? perShop.map(p=>
-    `<div class="stat"><div class="label">${p.name} कुल लाभ</div><div class="val ${p.cum.profit>=0?'pos':'neg'}">${fmtMoney(p.cum.profit)}</div></div>`
-  ).join('') : '';
+  // हर दुकान का लाभ 3 साफ हिस्सों में दिखाएँ:
+  // 1) केवल खरीद/बिक्री से Trading Profit
+  // 2) सप्लायर स्कीम/डिस्काउंट जैसी अलग आय
+  // 3) अंतिम कुल लाभ (Trading + Other Income - Expenses + Opening Profit)
+  // GST को लाभ में नहीं जोड़ा जाता; वह देयता (GST Payable) है।
+  const perShopCumHtml = multiShop ? perShop.map(p=>{
+    const shopData = state.data[p.id];
+    const openingProfit = Number((shopData.opening||{}).profit)||0;
+    const tradingProfit = (Number(p.cum.totalSaleAmt)||0) - (Number(p.cum.totalCostAmt)||0);
+    const otherIncome = Number(p.cum.totalCreditorScheme)||0;
+    const expenses = Number(p.cum.totalExpenseAmt)||0;
+    const totalProfitForShop = tradingProfit + otherIncome - expenses + openingProfit;
+    const shopWithdraw = Number(p.cum.totalCapitalWithdraw)||0;
+    const availableProfit = totalProfitForShop - shopWithdraw;
+    return `
+      <div class="stat" style="grid-column:span 2;">
+        <div class="label" style="font-weight:800;font-size:16px;">${p.name}</div>
+        <div class="summary-grid" style="margin-top:8px;">
+          <div class="stat"><div class="label">🛒 खरीद/बिक्री से लाभ</div><div class="val ${tradingProfit>=0?'pos':'neg'}">${fmtMoney(tradingProfit)}</div></div>
+          <div class="stat"><div class="label">🎁 स्कीम/अन्य आय</div><div class="val ${otherIncome>=0?'pos':'neg'}">${fmtMoney(otherIncome)}</div></div>
+          <div class="stat balance" style="grid-column:span 2;"><div class="label">कुल लाभ (खर्च घटाकर)</div><div class="val ${totalProfitForShop>=0?'pos':'neg'}" style="font-size:22px;">${fmtMoney(totalProfitForShop)}</div></div>
+        </div>
+        <div class="note" style="margin-top:8px;">दुकान से मालिक की निकासी: <b>${fmtMoney(shopWithdraw)}</b> → निकासी के बाद उपलब्ध लाभ: <b class="${availableProfit>=0?'pos':'neg'}">${fmtMoney(availableProfit)}</b></div>
+        ${expenses>0 ? `<div class="note" style="margin-top:4px;">दुकान खर्च: ${fmtMoney(expenses)}</div>` : ''}
+      </div>`;
+  }).join('') : '';
 
   return `
   <div class="card">
     <h2>👑 ${OWNER_NAME} — कैपिटल खाता</h2>
-    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 10px;">${multiShop ? ('दोनों दुकानों '+shopsLabel+' का मिलाकर हिसाब') : SHOPS[0].name} — सिर्फ़ मालिक के लिए</p>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 10px;">${multiShop ? ('दोनों दुकानों '+shopsLabel+' का मिलाकर हिसाब') : SHOPS[0].name} — सिर्फ़ मालिक के लिए। जिस दुकान से मालिक निकासी करेगा, उसी दुकान की Cash/Bank तुरंत घटेगी और नीचे उसी दुकान के ‘निकासी के बाद उपलब्ध लाभ’ में भी वह राशि घटकर दिखेगी।</p>
     <div class="summary-grid">
       <div class="stat" style="grid-column:span 2;"><div class="label">आज का कुल लाभ/हानि ${multiShop?'('+bothWord+')':''}</div><div class="val ${todayProfit>=0?'pos':'neg'}" style="font-size:24px;">${fmtMoney(todayProfit)}</div></div>
       ${perShopTodayHtml}
@@ -3271,6 +3308,7 @@ function sectionCapital(){
     <div class="summary-grid">
       ${perShopCumHtml}
       <div class="stat" style="grid-column:span 2;"><div class="label">कुल लाभ ${multiShop?'('+bothWord+')':''}</div><div class="val ${totalProfit>=0?'pos':'neg'}" style="font-size:22px;">${fmtMoney(totalProfit)}</div></div>
+      <div class="note" style="grid-column:span 2;">🧾 नोट: बिक्री पर दिया गया Discount बिक्री लाभ को घटाता है। GST को लाभ नहीं माना गया है; GST देयता अलग रहती है। सप्लायर से मिली Scheme/Discount को अन्य आय में जोड़ा गया है।</div>
       <div class="stat balance" style="grid-column:span 2;"><div class="label">${multiShop?(bothWord+' का '):''}कुल नकद सिल्लक</div><div class="val">${fmtMoney(totalCashBoth)}</div></div>
       <div class="stat balance" style="grid-column:span 2;"><div class="label">🏦 ${multiShop?(bothWord+' का '):''}कुल बैंक बैलेंस</div><div class="val">${fmtMoney(totalBankBoth)}</div></div>
       <div class="stat balance" style="grid-column:span 2;"><div class="label">💳 ${multiShop?(bothWord+' का '):''}क्रेडिट कार्ड बकाया</div><div class="val ${totalCardBoth>0?'neg':''}">${fmtMoney(totalCardBoth)}</div></div>
