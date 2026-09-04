@@ -2815,6 +2815,17 @@ function getBalanceStockValue(shopId, asOfDate){
   return getBalanceAssetBreakdown(shopId, asOfDate).total;
 }
 
+// लेनदार से मिली स्कीम/छूट का कुल योग (asOfDate तक)।
+// यह मालिक की पूंजी/लाभ (netCapital) में शामिल नहीं होता — इसे बैलेंस शीट व
+// ट्रायल बैलेंस में अलग से "स्कीम लाभ" के रूप में दिखाया जाता है ताकि दोनों तरफ
+// (Assets = Liabilities+Capital, Dr = Cr) बराबर मिल सकें, बिना पूंजी वाले
+// हिसाब की मौजूदा लॉजिक को छेड़े।
+function getSchemeProfitTotal(shopId, asOfDate){
+  const d = state.data[shopId];
+  const txs = asOfDate ? d.transactions.filter(t=>t.date<=asOfDate) : d.transactions;
+  return txs.filter(t=>t.type==='creditor_scheme').reduce((s,t)=>s+(Number(t.amount)||0),0);
+}
+
 function sectionBalanceSheet(){
   const asOf = state.bsAsOfDate || null;
   const perShop = SHOPS.map(s=>({
@@ -2851,14 +2862,18 @@ function sectionBalanceSheet(){
   const openingWithdrawSum = perShop.reduce((s,p)=>s+(Number(state.data[p.id].opening.capitalWithdraw)||0),0);
   const netCapital = totalInvest - openingWithdrawSum + totalProfit;
 
+  // लेनदार से मिली स्कीम/छूट — पूंजी (netCapital) में नहीं जोड़ी जाती,
+  // बल्कि अलग से "स्कीम लाभ" कॉलम के रूप में दिखाई जाती है।
+  const totalSchemeProfit = perShop.reduce((s,p)=>s+getSchemeProfitTotal(p.id, asOf),0);
+
   const totalAssets = totalCash + totalBank + totalStockValue + totalDebtors;
-  const totalLiabCapital = totalCreditors + totalCard + netCapital;
+  const totalLiabCapital = totalCreditors + totalCard + netCapital + totalSchemeProfit;
   const difference = totalAssets - totalLiabCapital;
   const isBalanced = Math.abs(difference)<1;
 
   state.lastBalanceSheetText = buildBalanceSheetShareText(
     bothWord,asOfLabel,totalCash,totalBank,totalStockValue,totalDebtors,
-    totalCreditors,totalCard,netCapital,totalAssets,totalLiabCapital,difference
+    totalCreditors,totalCard,netCapital,totalSchemeProfit,totalAssets,totalLiabCapital,difference
   );
 
   return `
@@ -2889,6 +2904,7 @@ function sectionBalanceSheet(){
     <div class="party-row"><span class="pname">सुंदरी लेनदार (Sundry Creditors)</span><span class="neg">${fmtMoney(totalCreditors)}</span></div>
     <div class="party-row"><span class="pname">💳 क्रेडिट कार्ड बकाया</span><span class="neg">${fmtMoney(totalCard)}</span></div>
     <div class="party-row"><span class="pname">👑 मालिक की पूंजी (Owner's Capital)</span><span="${netCapital>=0?'pos':'neg'}">${fmtMoney(netCapital)}</span></div>
+    ${totalSchemeProfit>0.5?`<div class="party-row"><span class="pname">🎁 स्कीम/छूट लाभ (Scheme Profit)</span><span class="pos">${fmtMoney(totalSchemeProfit)}</span></div>`:''}
     <div class="total-line"><span>कुल देयताएं + पूंजी</span><span style="font-size:18px;">${fmtMoney(totalLiabCapital)}</span></div>
   </div>
   <div class="card">
@@ -2910,7 +2926,7 @@ function clearBalanceSheetAsOf(){
   renderSection();
 }
 
-function buildBalanceSheetShareText(bothWord, asOfLabel, cash, bank, stockVal, debtors, creditors, card, capital, totalAssets, totalLiabCapital, difference){
+function buildBalanceSheetShareText(bothWord, asOfLabel, cash, bank, stockVal, debtors, creditors, card, capital, schemeProfit, totalAssets, totalLiabCapital, difference){
   let text = `⚖️ ${bothWord} — बैलेंस शीट (${asOfLabel} तक)\n\n`;
   text += `संपत्ति (Assets):\n`;
   text += `नकद: ${fmtMoney(cash)}\n`;
@@ -2922,6 +2938,7 @@ function buildBalanceSheetShareText(bothWord, asOfLabel, cash, bank, stockVal, d
   text += `लेनदार: ${fmtMoney(creditors)}\n`;
   text += `क्रेडिट कार्ड बकाया: ${fmtMoney(card)}\n`;
   text += `मालिक की पूंजी: ${fmtMoney(capital)}\n`;
+  if(schemeProfit > 0.5) text += `स्कीम/छूट लाभ: ${fmtMoney(schemeProfit)}\n`;
   text += `कुल: ${fmtMoney(totalLiabCapital)}\n\n`;
   text += `— डोंगरे बही-खाता`;
   return text;
@@ -2983,6 +3000,10 @@ function sectionTrialBalance(){
   const netCapital = totalInvest - openingWithdrawSum + totalProfit;
   if(netCapital >= 0) rows.push({label:'👑 मालिक की पूंजी (Capital + लाभ)', dr:0, cr:netCapital});
   else rows.push({label:'👑 मालिक की पूंजी (Capital + हानि)', dr:-netCapital, cr:0});
+
+  // लेनदार से मिली स्कीम/छूट — पूंजी वाली लाइन से अलग, अपना खुद का "स्कीम लाभ" कॉलम।
+  const totalSchemeProfit = perShop.reduce((s,p)=>s+getSchemeProfitTotal(p.id, asOf),0);
+  if(totalSchemeProfit > 0.5) rows.push({label:'🎁 स्कीम/छूट लाभ (Scheme Profit)', dr:0, cr:totalSchemeProfit});
 
   rows.forEach(r=>{ totalDr += (r.dr||0); totalCr += (r.cr||0); });
   const diff = totalDr - totalCr;
