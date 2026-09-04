@@ -527,7 +527,7 @@ function currentStock(){ return state.data[state.shop].stock; }
 
 function computeTotals(list){
   let cash=0, bank=0, card=0, profit=0, totalSaleAmt=0, totalCostAmt=0, totalPurchaseAmt=0, totalExpenseAmt=0;
-  let totalCapitalInvest=0, totalCapitalWithdraw=0;
+  let totalCapitalInvest=0, totalCapitalWithdraw=0, totalCreditorScheme=0;
   const debtors={}, creditors={};
   list.forEach(t=>{
     const meta = TYPE_META[t.type];
@@ -573,7 +573,10 @@ function computeTotals(list){
       if(mode==='bank') bank -= amt; else cash -= amt;
       profit -= amt; totalCapitalWithdraw += amt;
     } else if(t.type==='creditor_scheme'){
+      // लेनदार की देनदारी कम (Dr) और मिली स्कीम/छूट आय (Cr)
       creditors[t.party] = (creditors[t.party]||0) - amt;
+      profit += amt;
+      totalCreditorScheme += amt;
     } else if(t.type==='bank_deposit'){
       cash -= amt; bank += amt;
     } else if(t.type==='bank_withdraw'){
@@ -598,7 +601,7 @@ function computeTotals(list){
       creditors[t.party] = (creditors[t.party]||0) + amt;
     }
   });
-  return {cash, bank, card, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
+  return {cash, bank, card, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw, totalCreditorScheme};
 }
 
 function computeCumulative(shopId, asOfDate){
@@ -2646,7 +2649,7 @@ function generatePNL(){
   const list = currentTx().filter(t=>t.date>=from && t.date<=to);
   const tot = computeTotals(list);
   const grossProfit = tot.totalSaleAmt - tot.totalCostAmt;
-  const netProfit = grossProfit - tot.totalExpenseAmt;
+  const netProfit = grossProfit + (tot.totalCreditorScheme||0) - tot.totalExpenseAmt;
   const shopName = SHOPS.find(s=>s.id===state.shop).name;
 
   state.lastPnlText = buildPnlShareText(shopName, from, to, tot, grossProfit, netProfit);
@@ -2662,6 +2665,7 @@ function generatePNL(){
   <div class="card">
     <h2>लाभ-हानि खाता (Profit &amp; Loss Account)</h2>
     <div class="party-row"><span class="pname">क्रेडिट (Cr) — सकल लाभ (ऊपर से)</span><span class="${grossProfit>=0?'pos':'neg'}">${fmtMoney(grossProfit)}</span></div>
+    <div class="party-row"><span class="pname">क्रेडिट (Cr) — लेनदार से मिली स्कीम/छूट</span><span class="pos">${fmtMoney(tot.totalCreditorScheme||0)}</span></div>
     <div class="party-row"><span class="pname">डेबिट (Dr) — दुकान खर्च (व्यय)</span><span class="neg">${fmtMoney(tot.totalExpenseAmt)}</span></div>
     <div class="total-line"><span>शुद्ध लाभ/हानि (Net Profit/Loss)</span><span class="${netProfit>=0?'pos':'neg'}" style="font-size:18px;">${fmtMoney(netProfit)}</span></div>
   </div>
@@ -2679,6 +2683,7 @@ function buildPnlShareText(shopName, from, to, tot, grossProfit, netProfit){
   text += `सकल लाभ/हानि: ${fmtMoney(grossProfit)}\n\n`;
   text += `लाभ-हानि खाता (P&L Account):\n`;
   text += `Cr सकल लाभ: ${fmtMoney(grossProfit)}\n`;
+  text += `Cr लेनदार से मिली स्कीम/छूट: ${fmtMoney(tot.totalCreditorScheme||0)}\n`;
   text += `Dr दुकान खर्च: ${fmtMoney(tot.totalExpenseAmt)}\n`;
   text += `शुद्ध लाभ/हानि: ${fmtMoney(netProfit)}\n\n`;
   text += `— डोंगरे बही-खाता`;
