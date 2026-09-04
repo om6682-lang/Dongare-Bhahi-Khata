@@ -3206,6 +3206,9 @@ function sectionCapital(){
 
   const todayProfit = perShop.reduce((s,p)=>s+p.today.profit,0);
   const totalProfit = perShop.reduce((s,p)=>s+p.cum.profit,0);
+  const combinedTradingProfit = perShop.reduce((s,p)=>s+((Number(p.cum.totalSaleAmt)||0)-(Number(p.cum.totalCostAmt)||0)),0);
+  const combinedSchemeIncome = perShop.reduce((s,p)=>s+(Number(p.cum.totalCreditorScheme)||0),0);
+  const combinedExpenses = perShop.reduce((s,p)=>s+(Number(p.cum.totalExpenseAmt)||0),0);
   const totalInvest = perShop.reduce((s,p)=>s+(p.cum.totalCapitalInvest||0),0);
   const totalWithdraw = perShop.reduce((s,p)=>s+(p.cum.totalCapitalWithdraw||0),0);
   // पूंजी निकासी Profit/Expense नहीं है; इसे Owner's Capital से घटाया जाता है।
@@ -3307,7 +3310,16 @@ function sectionCapital(){
     <h2>कुल संचित हिसाब (शुरू से अब तक)</h2>
     <div class="summary-grid">
       ${perShopCumHtml}
-      <div class="stat" style="grid-column:span 2;"><div class="label">कुल लाभ ${multiShop?'('+bothWord+')':''}</div><div class="val ${totalProfit>=0?'pos':'neg'}" style="font-size:22px;">${fmtMoney(totalProfit)}</div></div>
+      ${multiShop ? `
+      <div class="stat" style="grid-column:span 2;background:var(--card);border-radius:10px;padding:10px;">
+        <div class="label" style="font-weight:800;">📋 ${bothWord} — मिलाकर विस्तार से</div>
+        <div class="summary-grid" style="margin-top:6px;">
+          <div class="stat"><div class="label">🛒 खरीद/बिक्री से लाभ</div><div class="val ${combinedTradingProfit>=0?'pos':'neg'}">${fmtMoney(combinedTradingProfit)}</div></div>
+          <div class="stat"><div class="label">🎁 स्कीम/अन्य आय</div><div class="val ${combinedSchemeIncome>=0?'pos':'neg'}">${fmtMoney(combinedSchemeIncome)}</div></div>
+          <div class="stat" style="grid-column:span 2;"><div class="label">🧾 कुल दुकान खर्च (पेट्रोल, किराया आदि)</div><div class="val neg">${fmtMoney(combinedExpenses)}</div></div>
+        </div>
+      </div>` : ''}
+      <div class="stat balance" style="grid-column:span 2;"><div class="label">कुल लाभ (खर्च घटाकर) ${multiShop?'('+bothWord+')':''}</div><div class="val ${totalProfit>=0?'pos':'neg'}" style="font-size:22px;">${fmtMoney(totalProfit)}</div></div>
       <div class="note" style="grid-column:span 2;">🧾 नोट: बिक्री पर दिया गया Discount बिक्री लाभ को घटाता है। GST को लाभ नहीं माना गया है; GST देयता अलग रहती है। सप्लायर से मिली Scheme/Discount को अन्य आय में जोड़ा गया है।</div>
       <div class="stat balance" style="grid-column:span 2;"><div class="label">${multiShop?(bothWord+' का '):''}कुल नकद सिल्लक</div><div class="val">${fmtMoney(totalCashBoth)}</div></div>
       <div class="stat balance" style="grid-column:span 2;"><div class="label">🏦 ${multiShop?(bothWord+' का '):''}कुल बैंक बैलेंस</div><div class="val">${fmtMoney(totalBankBoth)}</div></div>
