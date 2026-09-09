@@ -3774,14 +3774,25 @@ function toggleStockGroup(gid){
   }
 }
 
+function daysAgoLabel(ts){
+  if(!ts) return '';
+  const days = Math.floor((Date.now()-ts)/86400000);
+  if(days<=0) return 'आज का स्टॉक';
+  if(days===1) return '1 दिन पुराना';
+  return days+' दिन पुराना';
+}
 function stockRowHtml(it){
   const ptype = it.phoneType||'android';
   const ptypeLabel = ptype==='keypad' ? '☎️ कीपैड' : (ptype==='other' ? '📦 अन्य' : '📱 एंड्रॉइड');
+  const ageDays = it.ts ? Math.floor((Date.now()-it.ts)/86400000) : null;
+  const ageLabel = daysAgoLabel(it.ts);
+  const ageColor = ageDays===null ? 'var(--ink-soft)' : (ageDays>=60 ? '#b23b3b' : (ageDays>=30 ? '#b2823b' : 'var(--ink-soft)'));
   return `<div class="entry" style="align-items:flex-start;">
     <div>
       <span class="party">${escapeHtml(it.name)}</span>
       <div class="note">मात्रा: ${it.qty} · लागत ${fmtMoney(it.costPrice)}${it.sellPrice?(' · सुझाई बिक्री '+fmtMoney(it.sellPrice)):''}</div>
       <div class="note">${ptypeLabel}</div>
+      ${ageLabel?`<div class="note" style="color:${ageColor};font-weight:600;">🕒 ${ageLabel}</div>`:''}
       ${it.imei?`<div class="note">IMEI: ${escapeHtml(it.imei)}</div>`:''}
       ${it.barcode?`<div class="note">बारकोड: ${escapeHtml(it.barcode)}</div>`:''}
       ${it.note?`<div class="note">${escapeHtml(it.note)}</div>`:''}
