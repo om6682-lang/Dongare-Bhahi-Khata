@@ -4647,6 +4647,7 @@ async function addTx(){
       addedIds.push(newId);
     }
     tx.stockAddedIds = addedIds;
+    tx.stockLinked = true; // स्टॉक-लिंक्ड खरीद — इसलिए "बिना स्टॉक वाली खरीद" Asset में दोबारा नहीं जुड़ेगी
   }
 
   currentTx().push(tx);
@@ -4824,6 +4825,14 @@ async function saveEditTx(id){
   t.date = date;
   t.party = meta.needsParty ? party : '';
   t.note = note;
+  // अगर यह वही खरीद एंट्री है जिसके साथ स्टॉक भी जोड़ा गया था (stockAddedIds मौजूद है)
+  // लेकिन पुराने bug के कारण stockLinked flag सेट नहीं हुआ था — इसे Save करते समय ठीक
+  // कर दें, ताकि यह राशि "स्टॉक (लागत मूल्य)" और "बिना स्टॉक वाली खरीद" दोनों में एक
+  // साथ न जुड़े। यह सिर्फ़ इसी एंट्री (जिसे अभी Edit करके Save किया जा रहा है) पर लागू
+  // होता है — बाकी किसी पुरानी एंट्री को छेड़ा नहीं जाता।
+  if(Array.isArray(t.stockAddedIds) && t.stockAddedIds.length){
+    t.stockLinked = true;
+  }
   if(CASH_AFFECTING_TYPES.includes(type)){
     const pmEl = document.getElementById('et_payment_mode');
     t.paymentMode = pmEl ? pmEl.value : 'cash';
