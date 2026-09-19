@@ -410,9 +410,21 @@ const TYPE_META = {
   bank_withdraw: {label:'बैंक से निकासी (बैंक → कैश)', tag:'tag-receive_due', needsParty:false, needsCost:false, kind:'bank_withdraw'},
   card_withdraw: {label:'💳 क्रेडिट कार्ड से निकासी (कार्ड → कैश/बैंक)', tag:'tag-receive_due', needsParty:false, needsCost:false, kind:'card_withdraw'},
   card_payment: {label:'💳 क्रेडिट कार्ड बिल भुगतान (कैश/बैंक → कार्ड चुकाया)', tag:'tag-pay_due', needsParty:false, needsCost:false, kind:'card_payment'},
-  shop_transfer_give: {label:'🔁 दूसरी दुकान को पैसा दिया (आपसी लेन-देन)', tag:'tag-pay_due', needsParty:true, needsCost:false, kind:'shop_transfer_give'},
-  shop_transfer_take: {label:'🔁 दूसरी दुकान से पैसा लिया (अपने आप बनती है)', tag:'tag-receive_due', needsParty:true, needsCost:false, kind:'shop_transfer_take'},
+  // ---- दोनों दुकानों के बीच आपसी लेन-देन (नाम अपने आप "दूसरी दुकान" का दिखता है) ----
+  // 1) X को पैसे दिए: अपनी कैश/बैंक घटे + X से लेनदारी बढ़ी | X में: कैश/बैंक बढ़े + देनदारी बढ़ी
+  shop_transfer_give: {get label(){ return '🔁 '+otherShop().name+' को पैसे दिए'; }, tag:'tag-pay_due', needsParty:true, needsCost:false, kind:'shop_transfer_give'},
+  shop_transfer_take: {get label(){ return '🔁 '+otherShop().name+' से पैसे मिले (अपने आप बनी)'; }, tag:'tag-receive_due', needsParty:true, needsCost:false, kind:'shop_transfer_take'},
+  // 2) X से पैसे वापस मिले: अपनी कैश/बैंक बढ़े + X से लेनदारी घटी | X में: कैश/बैंक घटे + देनदारी घटी
+  shop_transfer_return_in: {get label(){ return '↩️ '+otherShop().name+' से पैसे वापस मिले'; }, tag:'tag-receive_due', needsParty:true, needsCost:false, kind:'shop_transfer_return_in'},
+  shop_transfer_return_out: {get label(){ return '↩️ '+otherShop().name+' को पैसे वापस दिए (अपने आप बनी)'; }, tag:'tag-pay_due', needsParty:true, needsCost:false, kind:'shop_transfer_return_out'},
 };
+// जो प्रकार चुनने पर दूसरी दुकान में अपने आप मिलती-जुलती एंट्री बनती है
+const SHOP_TRANSFER_MIRROR = {
+  shop_transfer_give: 'shop_transfer_take',
+  shop_transfer_return_in: 'shop_transfer_return_out'
+};
+// जिनमें "नाम" वाला खाना अपने आप दूसरी दुकान का नाम भरकर लॉक रहता है
+const SHOP_TRANSFER_FORM_TYPES = ['shop_transfer_give','shop_transfer_return_in'];
 // जिन प्रकार की एंट्री में सीधे "क्रेडिट कार्ड से भुगतान" वाला विकल्प भी दिया जाए
 // (यानी दुकानदार ने वस्तु/खर्च/उधार का भुगतान सीधे कार्ड से किया, कैश/बैंक पर कोई असर नहीं, कार्ड पर बकाया बढ़ा)
 const CARD_MODE_TYPES = ['purchase_cash','expense','pay_due'];
@@ -596,6 +608,14 @@ function computeTotals(list){
       // दूसरी दुकान से पैसा मिला: अपनी कैश/बैंक बढ़ी, दूसरी दुकान इस दुकान की "लेनदार" बनी
       if(mode==='bank') bank += amt; else cash += amt;
       creditors[t.party] = (creditors[t.party]||0) + amt;
+    } else if(t.type==='shop_transfer_return_in'){
+      // दूसरी दुकान से पैसे वापस मिले: अपनी कैश/बैंक बढ़ी, उस दुकान से हमारी लेनदारी (देनदार बकाया) घटी
+      if(mode==='bank') bank += amt; else cash += amt;
+      debtors[t.party] = (debtors[t.party]||0) - amt;
+    } else if(t.type==='shop_transfer_return_out'){
+      // दूसरी दुकान को पैसे वापस दिए: अपनी कैश/बैंक घटी, उस दुकान को हमारी देनदारी (लेनदार बकाया) घटी
+      if(mode==='bank') bank -= amt; else cash -= amt;
+      creditors[t.party] = (creditors[t.party]||0) - amt;
     }
   });
   return {cash, bank, card, profit, debtors, creditors, totalSaleAmt, totalCostAmt, totalPurchaseAmt, totalExpenseAmt, totalCapitalInvest, totalCapitalWithdraw};
@@ -745,6 +765,10 @@ function sectionToday(){
       amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#6B3FA0;">🔁 ${escapeHtml(t.party)} को दिया</div>`;
     } else if(t.type==='shop_transfer_take'){
       amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#6B3FA0;">🔁 ${escapeHtml(t.party)} से लिया</div>`;
+    } else if(t.type==='shop_transfer_return_in'){
+      amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#6B3FA0;">↩️ ${escapeHtml(t.party)} से वापस मिला</div>`;
+    } else if(t.type==='shop_transfer_return_out'){
+      amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#6B3FA0;">↩️ ${escapeHtml(t.party)} को वापस दिया</div>`;
     } else {
       amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span>`;
     }
@@ -824,7 +848,8 @@ function sectionEntry(){
       <option value="bank_withdraw">बैंक से निकासी (बैंक → कैश)</option>
       <option value="card_withdraw">💳 क्रेडिट कार्ड से निकासी (कार्ड → कैश/बैंक)</option>
       <option value="card_payment">💳 क्रेडिट कार्ड बिल भुगतान (कैश/बैंक → कार्ड चुकाया)</option>
-      <option value="shop_transfer_give">🔁 दूसरी दुकान को पैसा दिया (आपसी लेन-देन)</option>
+      <option value="shop_transfer_give">🔁 ${escapeHtml(otherShop().name)} को पैसे दिए</option>
+      <option value="shop_transfer_return_in">↩️ ${escapeHtml(otherShop().name)} से पैसे वापस मिले</option>
       <option value="capital_invest">पूंजी निवेश (मालिक ने पैसा डाला)</option>
       <option value="capital_withdraw">पूंजी निकासी (मालिक ने पैसा निकाला)</option>
     </select>
@@ -1311,6 +1336,8 @@ function partyLedgerEntries(name){
     else if(t.type==='purchase_credit') signed = -t.amount;
     else if(t.type==='pay_due') signed = t.amount;
     else if(t.type==='creditor_scheme') signed = t.amount;
+    else if(t.type==='shop_transfer_give' || t.type==='shop_transfer_return_out') signed = t.amount;
+    else if(t.type==='shop_transfer_take' || t.type==='shop_transfer_return_in') signed = -t.amount;
     entries.push({ ts:t.ts, date:t.date, label: meta ? meta.label : t.type, signed, note:t.note });
   });
   entries.sort((a,b)=>a.ts-b.ts);
@@ -1364,15 +1391,15 @@ function computePartyBills(name, kind){
   const entries = currentTx().filter(t=>t.party===name).sort((a,b)=>a.ts-b.ts);
   entries.forEach(t=>{
     if(kind==='debtor'){
-      if(t.type==='sale_credit' || t.type==='credit_given'){
+      if(t.type==='sale_credit' || t.type==='credit_given' || t.type==='shop_transfer_give'){
         bills.push({date:t.date, amount:t.amount, remaining:t.amount, ts:t.ts, note:t.note});
-      } else if(t.type==='receive_due'){
+      } else if(t.type==='receive_due' || t.type==='shop_transfer_return_in'){
         applyPaymentFIFO(t.amount);
       }
     } else {
-      if(t.type==='purchase_credit'){
+      if(t.type==='purchase_credit' || t.type==='shop_transfer_take'){
         bills.push({date:t.date, amount:t.amount, remaining:t.amount, ts:t.ts, note:t.note});
-      } else if(t.type==='pay_due' || t.type==='creditor_scheme'){
+      } else if(t.type==='pay_due' || t.type==='creditor_scheme' || t.type==='shop_transfer_return_out'){
         applyPaymentFIFO(t.amount);
       }
     }
@@ -2096,7 +2123,7 @@ function reportEntryRowHtml(t){
       <div class="note" style="text-align:right;">लागत ${fmtMoney(t.cost||0)} · <span class="${margin>=0?'pos':'neg'}">लाभ ${fmtMoney(margin)}</span></div>`;
   } else if(meta.kind==='purchase'){
     amtHtml = `<span class="amt" style="color:#2C5282;">-${fmtMoney(t.amount)}</span>`;
-  } else if(meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give'){
+  } else if(meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give' || t.type==='shop_transfer_return_out'){
     amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span>`;
   } else {
     amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span>`;
@@ -2137,11 +2164,11 @@ function partyMovementForRange(list, kind){
   const movement = {};
   list.forEach(t=>{
     if(kind==='debtor'){
-      if(t.type==='sale_credit' || t.type==='credit_given') movement[t.party] = (movement[t.party]||0) + t.amount;
-      else if(t.type==='receive_due') movement[t.party] = (movement[t.party]||0) - t.amount;
+      if(t.type==='sale_credit' || t.type==='credit_given' || t.type==='shop_transfer_give') movement[t.party] = (movement[t.party]||0) + t.amount;
+      else if(t.type==='receive_due' || t.type==='shop_transfer_return_in') movement[t.party] = (movement[t.party]||0) - t.amount;
     } else {
-      if(t.type==='purchase_credit') movement[t.party] = (movement[t.party]||0) + t.amount;
-      else if(t.type==='pay_due') movement[t.party] = (movement[t.party]||0) - t.amount;
+      if(t.type==='purchase_credit' || t.type==='shop_transfer_take') movement[t.party] = (movement[t.party]||0) + t.amount;
+      else if(t.type==='pay_due' || t.type==='shop_transfer_return_out') movement[t.party] = (movement[t.party]||0) - t.amount;
       else if(t.type==='creditor_scheme') movement[t.party] = (movement[t.party]||0) - t.amount;
     }
   });
@@ -2467,7 +2494,7 @@ async function buildGenericReportPdfBlob(title, from, to, type, list){
     detailRowsHtml = sorted.length ? sorted.map((t,idx)=>{
       const meta = TYPE_META[t.type] || {label:t.type};
       let amtColor = '#145A32';
-      if(meta.kind==='purchase' || meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give') amtColor = '#B3402A';
+      if(meta.kind==='purchase' || meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give' || t.type==='shop_transfer_return_out') amtColor = '#B3402A';
       const catNote = (t.type==='expense' && t.expenseCategory) ? (' · '+escapeHtml(t.expenseCategory)) : '';
       return `<tr>
         <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
@@ -4418,7 +4445,7 @@ async function importData(event){
   }
 }
 
-const CASH_AFFECTING_TYPES = ['sale_cash','purchase_cash','expense','receive_due','pay_due','capital_invest','capital_withdraw','card_withdraw','card_payment','shop_transfer_give','shop_transfer_take'];
+const CASH_AFFECTING_TYPES = ['sale_cash','purchase_cash','expense','receive_due','pay_due','capital_invest','capital_withdraw','card_withdraw','card_payment','shop_transfer_give','shop_transfer_take','shop_transfer_return_in','shop_transfer_return_out'];
 function paymentModeOptionsHtml(type, selected){
   selected = selected || 'cash';
   let html = `<option value="cash" ${selected==='cash'?'selected':''}>कैश (नकद)</option>`;
@@ -4462,10 +4489,10 @@ function toggleFields(){
   }
   const partyInput = document.getElementById('f_party');
   const partyLabel = document.getElementById('f_party_label');
-  if(type==='shop_transfer_give'){
+  if(SHOP_TRANSFER_FORM_TYPES.includes(type)){
     const os = otherShop();
     if(partyInput){ partyInput.value = os.name; partyInput.readOnly = true; }
-    if(partyLabel) partyLabel.textContent = 'किस दुकान को पैसा दिया';
+    if(partyLabel) partyLabel.textContent = (type==='shop_transfer_give') ? 'किस दुकान को पैसे दिए' : 'किस दुकान से पैसे वापस मिले';
   } else {
     if(partyInput && partyInput.readOnly){ partyInput.value=''; partyInput.readOnly = false; }
     if(partyLabel) partyLabel.textContent = 'नाम (ग्राहक/सप्लायर) — पहले से सेव नाम सुझाव में दिखेंगे';
@@ -4599,6 +4626,8 @@ async function addTx(){
   }
 
   const tx = {id:uid(), ts:Date.now(), type, amount, cost, date, party, note};
+  // आपसी लेन-देन में नाम हमेशा दूसरी दुकान का ही रहेगा
+  if(SHOP_TRANSFER_FORM_TYPES.includes(type)) tx.party = otherShop().name;
   if(CASH_AFFECTING_TYPES.includes(type)){
     const pmEl = document.getElementById('f_payment_mode');
     tx.paymentMode = pmEl ? pmEl.value : 'cash';
@@ -4653,12 +4682,12 @@ async function addTx(){
   currentTx().push(tx);
   await saveShop(state.shop);
 
-  // दूसरी दुकान को पैसा दिया → उस दुकान के खाते में अपने आप "दूसरी दुकान से पैसा लिया" वाली मिलती-जुलती एंट्री बन जाए
-  if(type==='shop_transfer_give'){
+  // दूसरी दुकान को पैसे दिए / से वापस मिले → उस दुकान के खाते में अपने आप मिलती-जुलती (उल्टी) एंट्री बन जाए
+  if(SHOP_TRANSFER_MIRROR[type]){
     const os = otherShop();
     const myName = SHOPS.find(s=>s.id===state.shop).name;
     const mirrorTx = {
-      id: uid(), ts: Date.now(), type: 'shop_transfer_take', amount, cost: 0,
+      id: uid(), ts: Date.now(), type: SHOP_TRANSFER_MIRROR[type], amount, cost: 0,
       date, party: myName, note, paymentMode: tx.paymentMode, linkedTxId: tx.id
     };
     tx.linkedTxId = mirrorTx.id;
@@ -4737,7 +4766,7 @@ function editTxFormHtml(t){
   const typeOptions = Object.entries(TYPE_META).map(([key,meta])=>
     `<option value="${key}" ${t.type===key?'selected':''}>${meta.label}</option>`
   ).join('');
-  const isShopTransfer = (t.type==='shop_transfer_give' || t.type==='shop_transfer_take');
+  const isShopTransfer = ['shop_transfer_give','shop_transfer_take','shop_transfer_return_in','shop_transfer_return_out'].includes(t.type);
   return `
   <div class="card" id="editTxForm">
     <h2>✎ एंट्री एडिट करें</h2>
