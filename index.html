@@ -228,6 +228,7 @@
   .tag-credit_purchase{background:#E6DDF4;color:#5B3E96;}
   .tag-receive_due{background:#DFF1E5;color:var(--green);}
   .tag-pay_due{background:#F7DEDA;color:var(--red);}
+  .tag-return{background:#F4E3D3;color:#8A4B08;}
   .entry .party{font-weight:600;color:var(--ink);}
   .entry .note{color:var(--ink-soft);font-size:12px;}
   .entry .amt{font-weight:700;font-size:15px;white-space:nowrap;}
@@ -398,6 +399,9 @@ const TYPE_META = {
   sale_credit:     {label:'उधार बिक्री',         tag:'tag-credit_sale',    needsParty:true,  needsCost:true,  kind:'sale'},
   purchase_cash:   {label:'नकद खरीद (माल)',      tag:'tag-purchase',       needsParty:false, needsCost:false, kind:'purchase'},
   purchase_credit: {label:'उधार खरीद (माल)',     tag:'tag-credit_purchase',needsParty:true,  needsCost:false, kind:'purchase'},
+  purchase_return: {label:'↩️ माल वापस — व्यापारी को (लेनदार बकाया घटेगा, कैश नहीं)', tag:'tag-return', needsParty:true, needsCost:false, kind:'purchase_return'},
+  sale_return_cash:   {label:'↩️ माल वापस — ग्राहक से (नकद वापस दिया)', tag:'tag-return', needsParty:false, needsCost:false, kind:'sale_return_cash'},
+  sale_return_credit: {label:'↩️ माल वापस — ग्राहक से (उधार खाता समायोजन — देनदार घटेगा, कैश नहीं)', tag:'tag-return', needsParty:true, needsCost:false, kind:'sale_return_credit'},
   expense:         {label:'खर्च (दुकान खर्चा)',  tag:'tag-expense',        needsParty:false, needsCost:false, kind:'expense'},
   receive_due:     {label:'देनदार से वसूली',     tag:'tag-receive_due',    needsParty:true,  needsCost:false, kind:'receive_due'},
   pay_due:         {label:'लेनदार को भुगतान',    tag:'tag-pay_due',        needsParty:true,  needsCost:false, kind:'pay_due'},
@@ -562,6 +566,15 @@ function computeTotals(list){
       totalPurchaseAmt += amt;
     } else if(t.type==='purchase_credit'){
       creditors[t.party] = (creditors[t.party]||0) + amt; totalPurchaseAmt += amt;
+    } else if(t.type==='purchase_return'){
+      // व्यापारी को माल वापस: कैश/बैंक पर असर नहीं, सिर्फ़ लेनदार (सप्लायर) का बकाया घटेगा
+      creditors[t.party] = (creditors[t.party]||0) - amt;
+    } else if(t.type==='sale_return_cash'){
+      // ग्राहक से माल वापस (जो नकद बिक्री थी) — ग्राहक को कैश वापस दिया, किसी के खाते पर असर नहीं
+      if(mode==='bank') bank -= amt; else cash -= amt;
+    } else if(t.type==='sale_return_credit'){
+      // ग्राहक से माल वापस (जो उधार बिक्री थी) — कैश पर असर नहीं, देनदार (ग्राहक) का बकाया घटेगा
+      debtors[t.party] = (debtors[t.party]||0) - amt;
     } else if(t.type==='expense'){
       // कार्ड से सीधे खर्च का भुगतान: कैश/बैंक पर असर नहीं, कार्ड पर बकाया बढ़ेगा
       if(mode==='card') card += amt;
@@ -659,6 +672,12 @@ function computeManualStockValue(shopId){
       movement += t.amount;
     } else if((t.type==='sale_cash' || t.type==='sale_credit') && !t.stockRestore){
       movement -= (t.cost||0);
+    } else if(t.type==='purchase_return' && !t.stockRestore){
+      // बिना स्टॉक-लिंक वाली माल वापसी (व्यापारी को) — अनुमानित स्टॉक घटेगा
+      movement -= (t.amount||0);
+    } else if((t.type==='sale_return_cash' || t.type==='sale_return_credit') && !t.stockLinked){
+      // बिना स्टॉक-लिंक वाली माल वापसी (ग्राहक से) — अनुमानित स्टॉक बढ़ेगा
+      movement += (t.amount||0);
     }
   });
   return base + movement;
@@ -769,6 +788,12 @@ function sectionToday(){
       amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#6B3FA0;">↩️ ${escapeHtml(t.party)} से वापस मिला</div>`;
     } else if(t.type==='shop_transfer_return_out'){
       amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#6B3FA0;">↩️ ${escapeHtml(t.party)} को वापस दिया</div>`;
+    } else if(t.type==='purchase_return'){
+      amtHtml = `<span class="amt" style="color:#8A4B08;">📦 -${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#8A4B08;">↩️ स्टॉक घटा · ${escapeHtml(t.party)} का लेनदार बकाया घटा (कैश पर असर नहीं)</div>`;
+    } else if(t.type==='sale_return_cash'){
+      amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#8A4B08;">📦 ↩️ स्टॉक बढ़ा · ग्राहक को नकद वापस दिया</div>`;
+    } else if(t.type==='sale_return_credit'){
+      amtHtml = `<span class="amt" style="color:#8A4B08;">📦 +${fmtMoney(t.amount)}</span><div class="note" style="text-align:right;color:#8A4B08;">↩️ स्टॉक बढ़ा · ${escapeHtml(t.party)} का देनदार बकाया घटा (कैश पर असर नहीं)</div>`;
     } else {
       amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span>`;
     }
@@ -840,6 +865,9 @@ function sectionEntry(){
       <option value="sale_credit">उधार बिक्री (ग्राहक उधार ले गया)</option>
       <option value="purchase_cash">नकद खरीद — माल/स्टॉक मंगाया</option>
       <option value="purchase_credit">उधार खरीद — सप्लायर से माल उधार</option>
+      <option value="purchase_return">↩️ माल वापस — व्यापारी को दिया (स्टॉक घटेगा, उसका लेनदार बकाया घटेगा, कैश नहीं)</option>
+      <option value="sale_return_cash">↩️ माल वापस — ग्राहक से आया (नकद बिक्री थी — ग्राहक को कैश वापस)</option>
+      <option value="sale_return_credit">↩️ माल वापस — ग्राहक से आया (उधार बिक्री थी — देनदार बकाया घटेगा, कैश नहीं)</option>
       <option value="expense">खर्च (किराया, बिजली, सैलरी आदि)</option>
       <option value="receive_due">देनदार से वसूली (पुराना उधार वापस आया)</option>
       <option value="pay_due">लेनदार को भुगतान (पुराना उधार चुकाया)</option>
@@ -861,7 +889,7 @@ function sectionEntry(){
       </select>
     </div>
     <div id="stockPickField">
-      <label>स्टॉक से आइटम चुनें (वैकल्पिक) — चुनने पर लागत अपने आप भरेगी और बिकने पर स्टॉक कम होगा</label>
+      <label id="stockPickLabel">स्टॉक से आइटम चुनें (वैकल्पिक) — चुनने पर लागत अपने आप भरेगी और बिकने पर स्टॉक कम होगा</label>
       <select id="f_stock_pick" onchange="onStockPick()">${stockOptionsHtml()}</select>
       <label>IMEI / सीरियल नंबर (बिक रहे यूनिट का — ज़रूरत हो तो ठीक करें)</label>
       <div style="display:flex;gap:8px;align-items:stretch;">
@@ -871,7 +899,7 @@ function sectionEntry(){
     </div>
     <div id="purchaseStockField">
       <label style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="f_add_stock_toggle" onchange="togglePurchaseStockFields()"> इस खरीद से स्टॉक भी जोड़ें
+        <input type="checkbox" id="f_add_stock_toggle" onchange="togglePurchaseStockFields()"> <span id="purchaseStockToggleLabel">इस खरीद से स्टॉक भी जोड़ें</span>
       </label>
       <div id="purchaseStockDetails" style="display:none;">
         <label>आइटम का नाम (डिफ़ॉल्ट — मात्रा 1 से ज़्यादा हो तो नीचे हर पीस का नाम अलग भी भर सकते हैं)</label>
@@ -2123,8 +2151,12 @@ function reportEntryRowHtml(t){
       <div class="note" style="text-align:right;">लागत ${fmtMoney(t.cost||0)} · <span class="${margin>=0?'pos':'neg'}">लाभ ${fmtMoney(margin)}</span></div>`;
   } else if(meta.kind==='purchase'){
     amtHtml = `<span class="amt" style="color:#2C5282;">-${fmtMoney(t.amount)}</span>`;
-  } else if(meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give' || t.type==='shop_transfer_return_out'){
+  } else if(meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give' || t.type==='shop_transfer_return_out' || t.type==='sale_return_cash'){
     amtHtml = `<span class="amt neg">-${fmtMoney(t.amount)}</span>`;
+  } else if(t.type==='purchase_return'){
+    amtHtml = `<span class="amt" style="color:#8A4B08;">📦 -${fmtMoney(t.amount)}</span>`;
+  } else if(t.type==='sale_return_credit'){
+    amtHtml = `<span class="amt" style="color:#8A4B08;">📦 +${fmtMoney(t.amount)}</span>`;
   } else {
     amtHtml = `<span class="amt pos">+${fmtMoney(t.amount)}</span>`;
   }
@@ -2488,13 +2520,15 @@ async function buildGenericReportPdfBlob(title, from, to, type, list){
     if(type==='sale') filtered = list.filter(t=>t.type==='sale_cash'||t.type==='sale_credit');
     else if(type==='sold_stock') filtered = list.filter(t=>(t.type==='sale_cash'||t.type==='sale_credit') && t.stockRestore);
     else if(type==='purchase') filtered = list.filter(t=>t.type==='purchase_cash'||t.type==='purchase_credit');
+    else if(type==='purchase_return') filtered = list.filter(t=>t.type==='purchase_return');
+    else if(type==='sale_return') filtered = list.filter(t=>t.type==='sale_return_cash'||t.type==='sale_return_credit');
     else if(type==='expense') filtered = list.filter(t=>t.type==='expense');
     else if(type==='capital') filtered = list.filter(t=>t.type==='capital_invest'||t.type==='capital_withdraw');
     const sorted = filtered.slice().sort((a,b)=> a.date===b.date ? a.ts-b.ts : (a.date<b.date?-1:1));
     detailRowsHtml = sorted.length ? sorted.map((t,idx)=>{
       const meta = TYPE_META[t.type] || {label:t.type};
       let amtColor = '#145A32';
-      if(meta.kind==='purchase' || meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give' || t.type==='shop_transfer_return_out') amtColor = '#B3402A';
+      if(meta.kind==='purchase' || meta.kind==='purchase_return' || meta.kind==='expense' || meta.kind==='pay_due' || t.type==='capital_withdraw' || t.type==='card_payment' || t.type==='shop_transfer_give' || t.type==='shop_transfer_return_out') amtColor = '#B3402A';
       const catNote = (t.type==='expense' && t.expenseCategory) ? (' · '+escapeHtml(t.expenseCategory)) : '';
       return `<tr>
         <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:center;color:#888;">${idx+1}</td>
@@ -2804,6 +2838,10 @@ function getBalanceAssetBreakdown(shopId, asOfDate){
     } else if((t.type==='sale_cash'||t.type==='sale_credit') && !t.stockRestore){
       // बिना stock-link वाली बिक्री में दी गई लागत को untracked asset से घटाएं।
       untracked -= Number(t.cost)||0;
+    } else if(t.type==='purchase_return' && !t.stockRestore){
+      untracked -= Number(t.amount)||0;
+    } else if((t.type==='sale_return_cash'||t.type==='sale_return_credit') && !t.stockLinked){
+      untracked += Number(t.amount)||0;
     }
   });
 
@@ -4445,7 +4483,7 @@ async function importData(event){
   }
 }
 
-const CASH_AFFECTING_TYPES = ['sale_cash','purchase_cash','expense','receive_due','pay_due','capital_invest','capital_withdraw','card_withdraw','card_payment','shop_transfer_give','shop_transfer_take','shop_transfer_return_in','shop_transfer_return_out'];
+const CASH_AFFECTING_TYPES = ['sale_cash','purchase_cash','expense','receive_due','pay_due','capital_invest','capital_withdraw','card_withdraw','card_payment','shop_transfer_give','shop_transfer_take','shop_transfer_return_in','shop_transfer_return_out','sale_return_cash'];
 function paymentModeOptionsHtml(type, selected){
   selected = selected || 'cash';
   let html = `<option value="cash" ${selected==='cash'?'selected':''}>कैश (नकद)</option>`;
@@ -4469,10 +4507,24 @@ function toggleFields(){
   partyField.style.display = meta.needsParty ? 'block':'none';
   document.getElementById('costField').style.display = meta.needsCost ? 'block':'none';
   const stockPick = document.getElementById('stockPickField');
-  if(stockPick) stockPick.style.display = meta.kind==='sale' ? 'block':'none';
+  const stockReduceKinds = ['sale','purchase_return'];
+  const stockAddKinds = ['purchase','sale_return_cash','sale_return_credit'];
+  if(stockPick) stockPick.style.display = stockReduceKinds.includes(meta.kind) ? 'block':'none';
+  const stockPickLabel = document.getElementById('stockPickLabel');
+  if(stockPickLabel){
+    stockPickLabel.textContent = meta.kind==='purchase_return'
+      ? 'स्टॉक से आइटम चुनें (वैकल्पिक) — चुनने पर वापस किया गया पीस स्टॉक से घट जाएगा'
+      : 'स्टॉक से आइटम चुनें (वैकल्पिक) — चुनने पर लागत अपने आप भरेगी और बिकने पर स्टॉक कम होगा';
+  }
   const purchaseStockField = document.getElementById('purchaseStockField');
-  if(purchaseStockField) purchaseStockField.style.display = meta.kind==='purchase' ? 'block':'none';
-  if(meta.kind!=='purchase'){
+  if(purchaseStockField) purchaseStockField.style.display = stockAddKinds.includes(meta.kind) ? 'block':'none';
+  const purchaseStockToggleLabel = document.getElementById('purchaseStockToggleLabel');
+  if(purchaseStockToggleLabel){
+    purchaseStockToggleLabel.textContent = (meta.kind==='sale_return_cash' || meta.kind==='sale_return_credit')
+      ? 'इस वापसी से स्टॉक में आइटम भी जोड़ें (ग्राहक से आया माल)'
+      : 'इस खरीद से स्टॉक भी जोड़ें';
+  }
+  if(!stockAddKinds.includes(meta.kind)){
     const toggle = document.getElementById('f_add_stock_toggle');
     if(toggle) toggle.checked = false;
     const details = document.getElementById('purchaseStockDetails');
@@ -4493,6 +4545,12 @@ function toggleFields(){
     const os = otherShop();
     if(partyInput){ partyInput.value = os.name; partyInput.readOnly = true; }
     if(partyLabel) partyLabel.textContent = (type==='shop_transfer_give') ? 'किस दुकान को पैसे दिए' : 'किस दुकान से पैसे वापस मिले';
+  } else if(type==='purchase_return' || type==='sale_return_credit'){
+    if(partyInput && partyInput.readOnly){ partyInput.value=''; partyInput.readOnly = false; }
+    if(partyLabel) partyLabel.textContent = (type==='purchase_return' ? 'व्यापारी/लेनदार का नाम — इसी का बकाया घटेगा' : 'ग्राहक/देनदार का नाम — इसी का बकाया घटेगा');
+  } else if(type==='sale_return_cash'){
+    if(partyInput && partyInput.readOnly){ partyInput.value=''; partyInput.readOnly = false; }
+    if(partyLabel) partyLabel.textContent = 'ग्राहक का नाम (वैकल्पिक — सिर्फ़ रिकॉर्ड के लिए, किसी खाते में नहीं जुड़ेगा)';
   } else {
     if(partyInput && partyInput.readOnly){ partyInput.value=''; partyInput.readOnly = false; }
     if(partyLabel) partyLabel.textContent = 'नाम (ग्राहक/सप्लायर) — पहले से सेव नाम सुझाव में दिखेंगे';
@@ -4505,8 +4563,14 @@ function onStockPick(){
   if(!id){ if(imeiEl) imeiEl.value=''; return; }
   const it = currentStock().find(s=>s.id===id);
   if(it){
+    const type = document.getElementById('f_type').value;
     document.getElementById('f_cost').value = it.costPrice;
-    if(it.sellPrice) document.getElementById('f_amount').value = it.sellPrice;
+    if(type==='purchase_return'){
+      // माल वापसी: राशि = खरीद लागत (जो व्यापारी को वापस लौटाई जा रही है)
+      document.getElementById('f_amount').value = it.costPrice;
+    } else if(it.sellPrice){
+      document.getElementById('f_amount').value = it.sellPrice;
+    }
     if(imeiEl) imeiEl.value = it.imei || '';
   }
 }
@@ -4593,10 +4657,10 @@ async function addTx(){
   const note = document.getElementById('f_note').value.trim();
   const meta = TYPE_META[type];
   const stockPickEl = document.getElementById('f_stock_pick');
-  const stockPickId = (meta.kind==='sale' && stockPickEl) ? stockPickEl.value : '';
+  const stockPickId = (['sale','purchase_return'].includes(meta.kind) && stockPickEl) ? stockPickEl.value : '';
 
   // खरीद के साथ स्टॉक जोड़ना हो तो हर पीस की अपनी खरीद कीमत से कुल राशि बनेगी
-  const addStockEl = (meta.kind==='purchase') ? document.getElementById('f_add_stock_toggle') : null;
+  const addStockEl = (['purchase','sale_return_cash','sale_return_credit'].includes(meta.kind)) ? document.getElementById('f_add_stock_toggle') : null;
   const addingStock = !!(addStockEl && addStockEl.checked);
   let sQty = 1, perPieceCosts = [], perPieceSells = [];
   if(addingStock){
@@ -4653,7 +4717,7 @@ async function addTx(){
   }
 
   // खरीद एंट्री के साथ स्टॉक भी जोड़ना है तो — हर पीस का अपना ID, खरीद कीमत, बिक्री कीमत व IMEI बनेगा
-  if(meta.kind==='purchase' && addingStock){
+  if(['purchase','sale_return_cash','sale_return_credit'].includes(meta.kind) && addingStock){
     const sName = document.getElementById('f_stock_name').value.trim();
     const sCompany = document.getElementById('f_stock_company').value.trim();
     const sPhoneType = document.getElementById('f_stock_phoneType').value;
