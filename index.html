@@ -460,6 +460,9 @@ let currentCapitalPin = null;
 function normalizeOwnerCapital(d){
   if(!d || typeof d !== 'object') d = {};
   if(!Array.isArray(d.personalExpenses)) d.personalExpenses = [];
+  if(!Array.isArray(d.loans)) d.loans = [];
+  if(!Array.isArray(d.customDefs)) d.customDefs = [];
+  if(!d.customData || typeof d.customData!=='object') d.customData = {};
   return d;
 }
 async function loadOwnerCapital(){
@@ -712,6 +715,7 @@ function renderNav(){
     {id:'capital', label:'👑 पूंजी'},
     {id:'settings', label:'⚙️ सेटिंग'},
   ];
+  oc().customDefs.filter(d=>d.place==='own').forEach(d=>sections.push({id:'cust_'+d.id,label:'🧩 '+d.name}));
   const el = document.getElementById('sectionNav');
   el.innerHTML = sections.map(s=>
     `<button class="${s.id===state.section?'active':''}" onclick="switchSection('${s.id}')">${s.label}</button>`
@@ -750,6 +754,8 @@ function renderSection(){
   else if(state.section==='trialbalance') c.innerHTML = sectionTrialBalance();
   else if(state.section==='capital') c.innerHTML = sectionCapital();
   else if(state.section==='settings') c.innerHTML = sectionSettings();
+  else if(state.section.startsWith('cust_')) c.innerHTML='';
+  if(!(state.section==='capital' && !state.capitalUnlocked)) c.insertAdjacentHTML('beforeend', customBlocksHtml(state.section));
   bindDynamic();
   if(state.section==='capital' && !state.capitalUnlocked){
     renderCapitalGateBody();
@@ -3388,6 +3394,7 @@ function sectionCapital(){
     </div>
   </div>
   <div id="capitalFormWrap"></div>
+  ${capitalLoansHtml()}
   <div class="card">
     <h2>निकाले गए पैसे का व्यक्तिगत/घर खर्च हिसाब</h2>
     <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">दुकान से निकाला गया पैसा जब आप घर/व्यक्तिगत ज़रूरत में ख़र्च करें, वो यहाँ दर्ज करें।</p>
@@ -4208,6 +4215,110 @@ function closeScanner(){
 function safeId(s){ return String(s).replace(/[^a-zA-Z0-9_]/g,'_'); }
 function escapeAttr(s){ return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
 
+
+// ===== मालिक का निजी उधार + कस्टम "नया जोड़ें" (सिर्फ़ मालिक पासवर्ड से) =====
+const CB_PLACES={dashboard:'डैशबोर्ड',today:'आज',entry:'एंट्री',invoice:'बिल',stock:'स्टॉक',parties:'खाता',summary:'हिसाब',report:'रिपोर्ट',scheme:'स्कीम/छूट',pnl:'लाभ-हानि',balancesheet:'बैलेंस शीट',trialbalance:'ट्रायल बैलेंस',capital:'पूंजी',settings:'सेटिंग',own:'🆕 नया अलग टैब'};
+const LK={give:'उधार दिया',recv:'वापस मिला',borrow:'उधार लिया',repay:'वापस चुकाया'};
+function oc(){return normalizeOwnerCapital(state.ownerCapital);}
+async function ownerAuth(){
+  if(state.capitalUnlocked||state.ownerOk) return true;
+  try{ if(!currentCapitalPin){ const sn=await dbRef('app/capitalPin').once('value'); currentCapitalPin=sn.val()||null; } }catch(e){}
+  if(!currentCapitalPin){
+    const p=prompt('पहली बार: मालिक का पासवर्ड बनाएं (पूंजी खाते वाला ही रहेगा)'); if(!p) return false;
+    await dbRef('app/capitalPin').set(p); currentCapitalPin=p; state.ownerOk=true; return true;
+  }
+  const p=prompt('मालिक का पासवर्ड डालें');
+  if(p && p===currentCapitalPin){ state.ownerOk=true; return true; }
+  if(p!==null) alert('गलत पासवर्ड'); return false;
+}
+// ---- निजी उधार ----
+function loanBalances(){const b={};oc().loans.forEach(l=>{b[l.party]=(b[l.party]||0)+({give:1,recv:-1,borrow:-1,repay:1}[l.kind]||0)*l.amount;});return b;}
+function capitalLoansHtml(){
+  const b=loanBalances(),names=Object.keys(b).filter(n=>Math.abs(b[n])>0.5);
+  const deb=names.filter(n=>b[n]>0),cre=names.filter(n=>b[n]<0);
+  const row=n=>`<div class="party-row" style="cursor:pointer" onclick="openLoanParty('${escapeAttr(n)}')"><span class="pname">${escapeHtml(n)}</span><span class="${b[n]>0?'pos':'neg'}">${fmtMoney(Math.abs(b[n]))}</span></div>`;
+  return `<div class="card"><h2>🤝 मालिक का निजी उधार (खाताधारक)</h2>
+  <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">पूंजी से खर्च के अलावा किसी को उधार दिया या लिया — यहाँ दर्ज करें। दुकान के कैश/लाभ पर असर नहीं। नाम पर टैप करके पूरा खाता देखें।</p>
+  <div class="summary-grid"><div class="stat"><div class="label">देनदार (मुझे लेना)</div><div class="val pos">${fmtMoney(deb.reduce((t,n)=>t+b[n],0))}</div></div><div class="stat"><div class="label">लेनदार (मुझे देना)</div><div class="val neg">${fmtMoney(-cre.reduce((t,n)=>t+b[n],0))}</div></div></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button class="submit-btn" style="margin:0" onclick="openLoanForm('give')">➕ उधार दिया</button><button class="submit-btn btn-secondary" style="margin:0" onclick="openLoanForm('borrow')">➕ उधार लिया</button></div>
+  <div id="loanFormWrap"></div>
+  ${deb.length?`<label>देनदार — जिनसे लेना है</label>${deb.map(row).join('')}`:''}
+  ${cre.length?`<label>लेनदार — जिन्हें देना है</label>${cre.map(row).join('')}`:''}</div>`;
+}
+function openLoanForm(kind,name){
+  document.getElementById('loanFormWrap').innerHTML=`<div style="margin-top:12px;border-top:1px dashed var(--gold);padding-top:8px"><b>${LK[kind]}</b>
+  <label>नाम</label><input id="ln_p" list="loanNames" value="${escapeHtml(name||'')}"><datalist id="loanNames">${Object.keys(loanBalances()).map(n=>`<option value="${escapeHtml(n)}">`).join('')}</datalist>
+  <label>राशि (₹)</label><input type="number" id="ln_a"><label>दिनांक</label><input type="date" id="ln_d" value="${state.date}"><label>टिप्पणी</label><input id="ln_n">
+  <button class="submit-btn" onclick="saveLoan('${kind}')">सेव करें ✓</button></div>`;
+}
+async function saveLoan(kind){
+  const party=document.getElementById('ln_p').value.trim(),amount=parseFloat(document.getElementById('ln_a').value);
+  if(!party||!amount||amount<=0){alert('नाम और सही राशि डालें');return;}
+  oc().loans.push({id:uid(),ts:Date.now(),date:document.getElementById('ln_d').value||state.date,party,kind,amount,note:document.getElementById('ln_n').value.trim()});
+  await saveOwnerCapital(); renderSection();
+}
+function openLoanParty(name){
+  const l=oc().loans.filter(x=>x.party===name).sort((a,b)=>a.date<b.date?-1:1),bal=loanBalances()[name]||0,p=bal>=0;
+  document.getElementById('loanFormWrap').innerHTML=`<div style="margin-top:12px;border-top:1px dashed var(--gold);padding-top:8px"><b>${escapeHtml(name)}</b> — <span class="${p?'pos':'neg'}">${p?'मुझे लेना':'मुझे देना'} ${fmtMoney(Math.abs(bal))}</span>
+  ${l.map(x=>`<div class="entry"><div><span class="note">${fmtDate(x.date)} · ${LK[x.kind]}</span>${x.note?`<div class="note">${escapeHtml(x.note)}</div>`:''}</div><span class="amt ${x.kind==='give'||x.kind==='repay'?'neg':'pos'}">${fmtMoney(x.amount)}</span><button class="del-btn" onclick="delLoan('${x.id}')">🗑️</button></div>`).join('')}
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"><button class="submit-btn" style="margin:0" onclick="openLoanForm('${p?'recv':'repay'}','${escapeAttr(name)}')">${p?'💰 वापस मिला':'💸 चुकाया'}</button><button class="submit-btn btn-secondary" style="margin:0" onclick="openLoanForm('${p?'give':'borrow'}','${escapeAttr(name)}')">➕ और ${p?'दिया':'लिया'}</button></div></div>`;
+}
+async function delLoan(id){ if(!confirm('यह एंट्री हटाएं?'))return; state.ownerCapital.loans=oc().loans.filter(x=>x.id!==id); await saveOwnerCapital(); renderSection(); }
+// ---- कस्टम जोड़ें ----
+function customBlocksHtml(sec){
+  let h=''; oc().customDefs.filter(d=>sec==='cust_'+d.id||d.place===sec).forEach(d=>h+=cbBlockHtml(d));
+  if(!sec.startsWith('cust_')) h+=`<div class="card" style="text-align:center"><button class="submit-btn btn-secondary" style="margin:0" onclick="openBuilder('${sec}')">🧩 इस हिस्से में कुछ नया जोड़ें (मालिक)</button></div>`;
+  return h;
+}
+function cbBlockHtml(d){
+  const rows=oc().customData[d.id]||[];
+  const inp=(f,i)=>{const id=`cb_${d.id}_${i}`;return `<label>${escapeHtml(f.label)}</label>`+(f.type==='select'?`<select id="${id}">${f.opts.map(x=>`<option>${escapeHtml(x)}</option>`).join('')}</select>`:`<input id="${id}" type="${f.type==='number'?'number':f.type==='date'?'date':'text'}" ${f.type==='date'?`value="${state.date}"`:''}>`);};
+  const tot=d.fields.map((f,i)=>f.type==='number'?`${escapeHtml(f.label)} कुल: <b>${fmtMoney(rows.reduce((t,r)=>t+(parseFloat(r.v[i])||0),0))}</b>`:'').filter(Boolean).join(' • ');
+  return `<div class="card"><h2>🧩 ${escapeHtml(d.name)}</h2>${d.fields.map(inp).join('')}<button class="submit-btn" onclick="cbAdd('${d.id}')">सेव करें ✓</button>${tot?`<div style="font-size:13px;margin-top:8px">${tot}</div>`:''}
+  ${rows.slice().reverse().map(r=>`<div class="entry"><div>${d.fields.map((f,i)=>r.v[i]?`<div class="${i?'note':'party'}">${escapeHtml(String(r.v[i]))}</div>`:'').join('')}</div><button class="del-btn" onclick="cbDel('${d.id}','${r.id}')">🗑️</button></div>`).join('')||'<div class="empty">अभी कुछ नहीं</div>'}</div>`;
+}
+async function cbAdd(id){
+  const d=oc().customDefs.find(x=>x.id===id); if(!d)return;
+  const v=d.fields.map((f,i)=>document.getElementById(`cb_${id}_${i}`).value.trim());
+  if(!v.some(x=>x)){alert('कुछ तो भरें');return;}
+  (oc().customData[id]=oc().customData[id]||[]).push({id:uid(),ts:Date.now(),v}); await saveOwnerCapital(); renderSection();
+}
+async function cbDel(id,rid){ if(!confirm('यह एंट्री हटाएं?'))return; state.ownerCapital.customData[id]=(oc().customData[id]||[]).filter(r=>r.id!==rid); await saveOwnerCapital(); renderSection(); }
+async function openBuilder(place){
+  if(!await ownerAuth())return;
+  const o=document.createElement('div'); o.id='cbOv'; o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;overflow:auto;padding:16px';
+  o.innerHTML=`<div class="card" style="max-width:520px;margin:20px auto"><h2>🧩 नया जोड़ें</h2><label>नाम (जैसे: किराया रजिस्टर)</label><input id="cbn">
+  <label>कहाँ दिखे?</label><select id="cbp">${Object.entries(CB_PLACES).map(([k,v])=>`<option value="${k}" ${k===place?'selected':''}>${v}</option>`).join('')}</select>
+  <label>फ़ील्ड — हर लाइन में एक: नाम | प्रकार</label><textarea id="cbf" rows="6" placeholder="नाम | text&#10;राशि | number&#10;तारीख | date&#10;स्थिति | select: पूरा, बाकी"></textarea>
+  <p style="font-size:12px;color:var(--ink-soft)">प्रकार: text (अक्षर) • number (अंक — कुल जुड़ेगा) • date (तारीख) • select: विकल्प1, विकल्प2</p>
+  <button class="submit-btn" onclick="cbSaveDef()">बनाएं ✓</button><button class="submit-btn btn-secondary" style="margin-top:8px" onclick="document.getElementById('cbOv').remove()">रद्द करें</button></div>`;
+  document.body.appendChild(o);
+}
+async function cbSaveDef(){
+  const name=document.getElementById('cbn').value.trim(),place=document.getElementById('cbp').value;
+  const fields=document.getElementById('cbf').value.split('\n').map(x=>x.trim()).filter(Boolean).map(line=>{
+    const [label,t='']=line.split('|').map(x=>x.trim()); let type='text',opts=[];
+    if(t.startsWith('select')){opts=(t.split(':')[1]||'').split(',').map(x=>x.trim()).filter(Boolean); if(opts.length)type='select';}
+    else if(t==='number'||t==='date') type=t;
+    return {label,type,opts};
+  }).filter(f=>f.label);
+  if(!name||!fields.length){alert('नाम और कम से कम एक फ़ील्ड डालें');return;}
+  const def={id:uid(),name,place,fields}; oc().customDefs.push(def); await saveOwnerCapital();
+  document.getElementById('cbOv').remove(); state.section=place==='own'?'cust_'+def.id:place; render();
+}
+function cbSettingsHtml(){
+  const defs=oc().customDefs;
+  return `<div class="card"><h2>🧩 अपना खुद का जोड़ें (सिर्फ़ मालिक)</h2>
+  <p style="font-size:13px;color:var(--ink-soft);margin:0 0 8px;">कोई भी नया रजिस्टर/खाना बनाएं और चुनें कि किस हिस्से में दिखे। बनाने-हटाने के लिए मालिक का पासवर्ड लगेगा।</p>
+  ${defs.map(d=>`<div class="party-row"><span class="pname">${escapeHtml(d.name)} <span style="font-size:12px;color:var(--ink-soft)">(${escapeHtml(CB_PLACES[d.place]||d.place)})</span></span><button class="del-btn" onclick="cbDelDef('${d.id}')">🗑️</button></div>`).join('')||'<div class="empty">अभी कुछ नहीं जोड़ा</div>'}
+  <button class="submit-btn" onclick="openBuilder('settings')">➕ नया जोड़ें</button></div>`;
+}
+async function cbDelDef(id){
+  if(!await ownerAuth()||!confirm('इसे और इसका सारा डेटा हटाएं?'))return;
+  state.ownerCapital.customDefs=oc().customDefs.filter(d=>d.id!==id); delete oc().customData[id]; await saveOwnerCapital();
+  if(state.section==='cust_'+id) state.section='settings'; render();
+}
+
 function sectionSettings(){
   const shopData = state.data[state.shop];
   const opening = shopData.opening;
@@ -4345,7 +4456,7 @@ function sectionSettings(){
     <label>नया पासवर्ड दोबारा</label>
     <input type="password" id="pw_confirm" placeholder="नया पासवर्ड दोबारा" maxlength="20">
     <button class="submit-btn" onclick="changePassword()">पासवर्ड बदलें ✓</button>
-  </div>`;
+  </div>${cbSettingsHtml()}`;
 }
 
 async function changePassword(){
