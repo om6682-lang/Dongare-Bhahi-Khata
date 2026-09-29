@@ -3298,7 +3298,8 @@ function sectionCapital(){
 
   const personalExpenses = state.ownerCapital.personalExpenses || [];
   const totalPersonalSpent = personalExpenses.reduce((s,e)=>s+(e.amount||0),0);
-  const cashInHand = totalWithdraw - totalPersonalSpent;
+  const loanCashEffect = oc().loans.reduce((t,l)=>t+({give:-1,recv:1,borrow:1,repay:-1}[l.kind]||0)*l.amount,0);
+  const cashInHand = totalWithdraw - totalPersonalSpent + loanCashEffect;
 
   const history = [];
   SHOPS.forEach(s=>{
